@@ -47,7 +47,7 @@ import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.stream.io.BufferedOutputStream;
 import org.apache.nifi.stream.io.StreamThrottler;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.ProcessSessionFactory;
@@ -61,7 +61,8 @@ import org.apache.nifi.util.FlowFileUnpackagerV3;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 
-@Path(ListenHTTP.URI)
+
+@Path("")
 public class ListenHTTPServlet extends HttpServlet {
 
     private static final long serialVersionUID = 5329940480987723163L;
@@ -86,25 +87,27 @@ public class ListenHTTPServlet extends HttpServlet {
     private final AtomicLong filesReceived = new AtomicLong(0L);
     private final AtomicBoolean spaceAvailable = new AtomicBoolean(true);
 
-    private ProcessorLog logger;
+    private ComponentLog logger;
     private AtomicReference<ProcessSessionFactory> sessionFactoryHolder;
     private volatile ProcessContext processContext;
     private Pattern authorizedPattern;
     private Pattern headerPattern;
     private ConcurrentMap<String, FlowFileEntryTimeWrapper> flowFileMap;
     private StreamThrottler streamThrottler;
+    private String basePath;
 
     @SuppressWarnings("unchecked")
     @Override
     public void init(final ServletConfig config) throws ServletException {
         final ServletContext context = config.getServletContext();
-        this.logger = (ProcessorLog) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_LOGGER);
+        this.logger = (ComponentLog) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_LOGGER);
         this.sessionFactoryHolder = (AtomicReference<ProcessSessionFactory>) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_SESSION_FACTORY_HOLDER);
         this.processContext = (ProcessContext) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_PROCESS_CONTEXT_HOLDER);
         this.authorizedPattern = (Pattern) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_AUTHORITY_PATTERN);
         this.headerPattern = (Pattern) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_HEADER_PATTERN);
         this.flowFileMap = (ConcurrentMap<String, FlowFileEntryTimeWrapper>) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_FLOWFILE_MAP);
         this.streamThrottler = (StreamThrottler) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_STREAM_THROTTLER);
+        this.basePath = (String) context.getAttribute(ListenHTTP.CONTEXT_ATTRIBUTE_BASE_PATH);
     }
 
     @Override
@@ -227,9 +230,6 @@ public class ListenHTTPServlet extends HttpServlet {
                                     }
                                 }
 
-                                // remove deprecated FlowFile attribute that was used in older versions of NiFi
-                                attributes.remove("parent.uuid");
-
                                 hasMoreData.set(unpackager.hasMoreData());
                             }
                         }
@@ -266,6 +266,7 @@ public class ListenHTTPServlet extends HttpServlet {
 
                 flowFile = session.putAllAttributes(flowFile, attributes);
                 session.getProvenanceReporter().receive(flowFile, request.getRequestURL().toString(), sourceSystemFlowFileIdentifier, "Remote DN=" + foundSubject, transferMillis);
+                flowFile = session.putAttribute(flowFile, "restlistener.remote.source.host", request.getRemoteHost());
                 flowFile = session.putAttribute(flowFile, "restlistener.remote.user.dn", foundSubject);
                 flowFileSet.add(flowFile);
 
@@ -291,7 +292,7 @@ public class ListenHTTPServlet extends HttpServlet {
                 } while (previousWrapper != null);
 
                 response.setStatus(HttpServletResponse.SC_SEE_OTHER);
-                final String ackUri = ListenHTTP.URI + "/holds/" + uuid;
+                final String ackUri =  "/" + basePath + "/holds/" + uuid;
                 response.addHeader(LOCATION_HEADER_NAME, ackUri);
                 response.addHeader(LOCATION_URI_INTENT_NAME, LOCATION_URI_INTENT_VALUE);
                 response.getOutputStream().write(ackUri.getBytes("UTF-8"));

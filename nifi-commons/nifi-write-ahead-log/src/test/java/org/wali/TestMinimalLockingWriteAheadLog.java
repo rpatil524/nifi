@@ -20,9 +20,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileFilter;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -46,6 +51,64 @@ import org.slf4j.LoggerFactory;
 
 public class TestMinimalLockingWriteAheadLog {
     private static final Logger logger = LoggerFactory.getLogger(TestMinimalLockingWriteAheadLog.class);
+
+
+    @Test
+    @Ignore("for local testing only")
+    public void testUpdatePerformance() throws IOException, InterruptedException {
+        final int numPartitions = 4;
+
+        final Path path = Paths.get("target/minimal-locking-repo");
+        deleteRecursively(path.toFile());
+        assertTrue(path.toFile().mkdirs());
+
+        final DummyRecordSerde serde = new DummyRecordSerde();
+        final WriteAheadRepository<DummyRecord> repo = new MinimalLockingWriteAheadLog<>(path, numPartitions, serde, null);
+        final Collection<DummyRecord> initialRecs = repo.recoverRecords();
+        assertTrue(initialRecs.isEmpty());
+
+        final int updateCountPerThread = 1_000_000;
+        final int numThreads = 16;
+
+        final Thread[] threads = new Thread[numThreads];
+
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < numThreads; i++) {
+                final Thread t = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        for (int i = 0; i < updateCountPerThread; i++) {
+                            final DummyRecord record = new DummyRecord(String.valueOf(i), UpdateType.CREATE);
+                            try {
+                                repo.update(Collections.singleton(record), false);
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                                Assert.fail(e.toString());
+                            }
+                        }
+                    }
+                });
+
+                threads[i] = t;
+            }
+
+            final long start = System.nanoTime();
+            for (final Thread t : threads) {
+                t.start();
+            }
+            for (final Thread t : threads) {
+                t.join();
+            }
+
+            final long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            if (j == 0) {
+                System.out.println(millis + " ms to insert " + updateCountPerThread * numThreads + " updates using " + numPartitions + " partitions and " + numThreads + " threads, *as a warmup!*");
+            } else {
+                System.out.println(millis + " ms to insert " + updateCountPerThread * numThreads + " updates using " + numPartitions + " partitions and " + numThreads + " threads");
+            }
+        }
+    }
+
 
 
     @Test
@@ -417,6 +480,151 @@ public class TestMinimalLockingWriteAheadLog {
 
     }
 
+    @Test
+    public void testShutdownWhileBlacklisted() throws IOException {
+        final Path path = Paths.get("target/minimal-locking-repo-shutdown-blacklisted");
+        deleteRecursively(path.toFile());
+        Files.createDirectories(path);
+
+        final SerDe<SimpleRecord> failOnThirdWriteSerde = new SerDe<SimpleRecord>() {
+            private int writes = 0;
+
+            @Override
+            public void serializeEdit(SimpleRecord previousRecordState, SimpleRecord newRecordState, DataOutputStream out) throws IOException {
+                serializeRecord(newRecordState, out);
+            }
+
+            @Override
+            public void serializeRecord(SimpleRecord record, DataOutputStream out) throws IOException {
+                int size = (int) record.getSize();
+                out.writeLong(record.getSize());
+
+                for (int i = 0; i < size; i++) {
+                    out.write('A');
+                }
+
+                if (++writes == 3) {
+                    throw new IOException("Intentional Exception for Unit Testing");
+                }
+
+                out.writeLong(record.getId());
+            }
+
+            @Override
+            public SimpleRecord deserializeEdit(DataInputStream in, Map<Object, SimpleRecord> currentRecordStates, int version) throws IOException {
+                return deserializeRecord(in, version);
+            }
+
+            @Override
+            public SimpleRecord deserializeRecord(DataInputStream in, int version) throws IOException {
+                long size = in.readLong();
+
+                for (int i = 0; i < (int) size; i++) {
+                    in.read();
+                }
+
+                long id = in.readLong();
+                return new SimpleRecord(id, size);
+            }
+
+            @Override
+            public Object getRecordIdentifier(SimpleRecord record) {
+                return record.getId();
+            }
+
+            @Override
+            public UpdateType getUpdateType(SimpleRecord record) {
+                return UpdateType.CREATE;
+            }
+
+            @Override
+            public String getLocation(SimpleRecord record) {
+                return null;
+            }
+
+            @Override
+            public int getVersion() {
+                return 0;
+            }
+        };
+
+        final WriteAheadRepository<SimpleRecord> writeRepo = new MinimalLockingWriteAheadLog<>(path, 1, failOnThirdWriteSerde, null);
+        final Collection<SimpleRecord> initialRecs = writeRepo.recoverRecords();
+        assertTrue(initialRecs.isEmpty());
+
+
+        writeRepo.update(Collections.singleton(new SimpleRecord(1L, 1L)), false);
+        writeRepo.update(Collections.singleton(new SimpleRecord(2L, 2L)), false);
+        try {
+            // Use a size of 8194 because the BufferedOutputStream has a buffer size of 8192 and we want
+            // to exceed this for testing purposes.
+            writeRepo.update(Collections.singleton(new SimpleRecord(3L, 8194L)), false);
+            Assert.fail("Expected IOException but did not get it");
+        } catch (final IOException ioe) {
+            // expected behavior
+        }
+
+        final Path partitionDir = path.resolve("partition-0");
+        final File journalFile = partitionDir.toFile().listFiles()[0];
+        final long journalFileSize = journalFile.length();
+        verifyBlacklistedJournalContents(journalFile, failOnThirdWriteSerde);
+
+        writeRepo.shutdown();
+
+        // Ensure that calling shutdown() didn't write anything to the journal file
+        final long newJournalSize = journalFile.length();
+        assertEquals("Calling Shutdown wrote " + (newJournalSize - journalFileSize) + " bytes to the journal file", newJournalSize, journalFile.length());
+    }
+
+    private void verifyBlacklistedJournalContents(final File journalFile, final SerDe<?> serde) throws IOException {
+        try (final FileInputStream fis = new FileInputStream(journalFile);
+            final InputStream bis = new BufferedInputStream(fis);
+            final DataInputStream in = new DataInputStream(bis)) {
+
+            // Verify header info.
+            final String waliClassName = in.readUTF();
+            assertEquals(MinimalLockingWriteAheadLog.class.getName(), waliClassName);
+
+            final int waliVersion = in.readInt();
+            assertTrue(waliVersion > 0);
+
+            final String serdeClassName = in.readUTF();
+            assertEquals(serde.getClass().getName(), serdeClassName);
+
+            final int serdeVersion = in.readInt();
+            assertEquals(serde.getVersion(), serdeVersion);
+
+            for (int i = 0; i < 2; i++) {
+                long transactionId = in.readLong();
+                assertEquals(i, transactionId);
+
+                // read what serde wrote
+                long size = in.readLong();
+
+                assertEquals((i + 1), size);
+
+                for (int j = 0; j < (int) size; j++) {
+                    final int c = in.read();
+                    assertEquals('A', c);
+                }
+
+                long id = in.readLong();
+                assertEquals((i + 1), id);
+
+                int transactionIndicator = in.read();
+                assertEquals(2, transactionIndicator);
+            }
+
+            // In previous implementations, we would still have a partial record written out.
+            // In the current version, however, the serde above would result in the data serialization
+            // failing and as a result no data would be written to the stream, so the stream should
+            // now be out of data
+            final int nextByte = in.read();
+            assertEquals(-1, nextByte);
+        }
+    }
+
+
 
     @Test
     public void testDecreaseNumberOfPartitions() throws IOException {
@@ -544,4 +752,21 @@ public class TestMinimalLockingWriteAheadLog {
         return size;
     }
 
+    static class SimpleRecord {
+        private long id;
+        private long size;
+
+        public SimpleRecord(final long id, final long size) {
+            this.id = id;
+            this.size = size;
+        }
+
+        public long getId() {
+            return id;
+        }
+
+        public long getSize() {
+            return size;
+        }
+    }
 }

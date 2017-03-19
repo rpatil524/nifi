@@ -21,6 +21,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
@@ -37,6 +39,7 @@ import com.amazonaws.services.sqs.model.DeleteMessageBatchRequestEntry;
 
 @SupportsBatching
 @SeeAlso({GetSQS.class, PutSQS.class})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"Amazon", "AWS", "SQS", "Queue", "Delete"})
 @CapabilityDescription("Deletes a message from an Amazon Simple Queuing Service Queue")
 public class DeleteSQS extends AbstractSQSProcessor {
@@ -51,7 +54,7 @@ public class DeleteSQS extends AbstractSQSProcessor {
             .build();
 
     public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(
-            Arrays.asList(ACCESS_KEY, SECRET_KEY, REGION, QUEUE_URL, TIMEOUT));
+            Arrays.asList(ACCESS_KEY, SECRET_KEY, CREDENTIALS_FILE, AWS_CREDENTIALS_PROVIDER_SERVICE, REGION, QUEUE_URL, TIMEOUT, PROXY_HOST, PROXY_HOST_PORT));
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
@@ -88,7 +91,11 @@ public class DeleteSQS extends AbstractSQSProcessor {
             session.transfer(flowFiles, REL_SUCCESS);
         } catch (final Exception e) {
             getLogger().error("Failed to delete {} objects from SQS due to {}", new Object[]{flowFiles.size(), e});
-            session.transfer(flowFiles, REL_FAILURE);
+            final List<FlowFile> penalizedFlowFiles = new ArrayList<>();
+            for (final FlowFile flowFile : flowFiles) {
+                penalizedFlowFiles.add(session.penalize(flowFile));
+            }
+            session.transfer(penalizedFlowFiles, REL_FAILURE);
         }
     }
 

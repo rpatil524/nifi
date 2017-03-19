@@ -21,6 +21,7 @@ import java.util.Set;
 
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.controller.ControllerServiceLookup;
 
 /**
@@ -133,10 +134,35 @@ public interface ProcessContext {
     boolean hasIncomingConnection();
 
     /**
+     * @return <code>true</code> if the processor has one or more incoming connections for
+     *         which the source of the connection is NOT the processor; returns <code>false</code> if
+     *         the processor has no incoming connections or if all incoming connections are self-loops
+     *         (i.e., the processor is also the source of all incoming connections).
+     */
+    boolean hasNonLoopConnection();
+
+    /**
      * @param relationship a relationship to check for connections
      * @return true if the relationship has one or more outbound connections,
-     * false otherwise
+     *         false otherwise
      */
     boolean hasConnection(Relationship relationship);
 
+    /**
+     * @param property the Property whose value should be inspected to determined if it contains an Expression Language Expression
+     * @return <code>true</code> if the value of the given Property contains a NiFi Expression
+     * Language Expression, <code>false</code> if it does not. Note that <code>false</code> will be returned if the Property Descriptor
+     * does not allow the Expression Language, even if a seemingly valid Expression is present in the value.
+     */
+    boolean isExpressionLanguagePresent(PropertyDescriptor property);
+
+    /**
+     * @return the StateManager that can be used to store and retrieve state for this component
+     */
+    StateManager getStateManager();
+
+    /**
+     * @return the configured name of this processor
+     */
+    String getName();
 }

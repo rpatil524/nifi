@@ -16,7 +16,11 @@
  */
 package org.apache.nifi.processors.solr;
 
+import org.apache.nifi.controller.AbstractControllerService;
 import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.reporting.InitializationException;
+import org.apache.nifi.ssl.SSLContextService;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
 import org.apache.solr.client.solrj.SolrClient;
@@ -24,15 +28,19 @@ import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpSolrClient;
+import org.apache.solr.client.solrj.impl.Krb5HttpClientConfigurer;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.StringUtils;
 import org.apache.solr.common.util.NamedList;
 import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import javax.net.ssl.SSLContext;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.Arrays;
@@ -101,7 +109,7 @@ public class TestPutSolrContentStream {
         try (FileInputStream fileIn = new FileInputStream(SOLR_JSON_MULTIPLE_DOCS_FILE)) {
             runner.enqueue(fileIn);
 
-            runner.run();
+            runner.run(1, false);
             runner.assertTransferCount(PutSolrContentStream.REL_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_CONNECTION_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_SUCCESS, 1);
@@ -133,7 +141,7 @@ public class TestPutSolrContentStream {
         try (FileInputStream fileIn = new FileInputStream(CUSTOM_JSON_SINGLE_DOC_FILE)) {
             runner.enqueue(fileIn);
 
-            runner.run();
+            runner.run(1, false);
             runner.assertTransferCount(PutSolrContentStream.REL_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_CONNECTION_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_SUCCESS, 1);
@@ -159,7 +167,7 @@ public class TestPutSolrContentStream {
         try (FileInputStream fileIn = new FileInputStream(CSV_MULTIPLE_DOCS_FILE)) {
             runner.enqueue(fileIn);
 
-            runner.run();
+            runner.run(1, false);
             runner.assertTransferCount(PutSolrContentStream.REL_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_CONNECTION_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_SUCCESS, 1);
@@ -185,7 +193,7 @@ public class TestPutSolrContentStream {
         try (FileInputStream fileIn = new FileInputStream(XML_MULTIPLE_DOCS_FILE)) {
             runner.enqueue(fileIn);
 
-            runner.run();
+            runner.run(1, false);
             runner.assertTransferCount(PutSolrContentStream.REL_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_CONNECTION_FAILURE, 0);
             runner.assertTransferCount(PutSolrContentStream.REL_SUCCESS, 1);
@@ -225,7 +233,7 @@ public class TestPutSolrContentStream {
 
         // run the processor with a delete-by-query command
         runner.enqueue("<delete><query>first:bob</query></delete>".getBytes("UTF-8"));
-        runner.run();
+        runner.run(1, false);
 
         // prove the document got deleted
         qResponse = solrClient.query(query);
@@ -345,12 +353,160 @@ public class TestPutSolrContentStream {
         runner.assertValid();
     }
 
+
     @Test
     public void testSolrTypeStandardShouldNotRequireCollection() {
         final TestRunner runner = TestRunners.newTestRunner(PutSolrContentStream.class);
         runner.setProperty(PutSolrContentStream.SOLR_TYPE, PutSolrContentStream.SOLR_TYPE_STANDARD.getValue());
         runner.setProperty(PutSolrContentStream.SOLR_LOCATION, "http://localhost:8443/solr");
         runner.assertValid();
+    }
+
+    @Test
+    public void testHttpsUrlShouldRequireSSLContext() throws InitializationException {
+        final TestRunner runner = TestRunners.newTestRunner(PutSolrContentStream.class);
+        runner.setProperty(PutSolrContentStream.SOLR_TYPE, PutSolrContentStream.SOLR_TYPE_STANDARD.getValue());
+        runner.setProperty(PutSolrContentStream.SOLR_LOCATION, "https://localhost:8443/solr");
+        runner.assertNotValid();
+
+        final SSLContextService sslContextService = new MockSSLContextService();
+        runner.addControllerService("ssl-context", sslContextService);
+        runner.enableControllerService(sslContextService);
+
+        runner.setProperty(PutSolrContentStream.SSL_CONTEXT_SERVICE, "ssl-context");
+        runner.assertValid();
+    }
+
+    @Test
+    public void testHttpUrlShouldNotAllowSSLContext() throws InitializationException {
+        final TestRunner runner = TestRunners.newTestRunner(PutSolrContentStream.class);
+        runner.setProperty(PutSolrContentStream.SOLR_TYPE, PutSolrContentStream.SOLR_TYPE_STANDARD.getValue());
+        runner.setProperty(PutSolrContentStream.SOLR_LOCATION, "http://localhost:8443/solr");
+        runner.assertValid();
+
+        final SSLContextService sslContextService = new MockSSLContextService();
+        runner.addControllerService("ssl-context", sslContextService);
+        runner.enableControllerService(sslContextService);
+
+        runner.setProperty(PutSolrContentStream.SSL_CONTEXT_SERVICE, "ssl-context");
+        runner.assertNotValid();
+    }
+
+    @Test
+    public void testUsernamePasswordValidation() {
+        final TestRunner runner = TestRunners.newTestRunner(PutSolrContentStream.class);
+        runner.setProperty(PutSolrContentStream.SOLR_TYPE, PutSolrContentStream.SOLR_TYPE_STANDARD.getValue());
+        runner.setProperty(PutSolrContentStream.SOLR_LOCATION, "http://localhost:8443/solr");
+        runner.assertValid();
+
+        runner.setProperty(PutSolrContentStream.BASIC_USERNAME, "user1");
+        runner.assertNotValid();
+
+        runner.setProperty(PutSolrContentStream.BASIC_PASSWORD, "password");
+        runner.assertValid();
+
+        runner.setProperty(PutSolrContentStream.BASIC_USERNAME, "");
+        runner.assertNotValid();
+
+        runner.setProperty(PutSolrContentStream.BASIC_USERNAME, "${solr.user}");
+        runner.assertNotValid();
+
+        runner.setVariable("solr.user", "solrRocks");
+        runner.assertValid();
+
+        runner.setProperty(PutSolrContentStream.BASIC_PASSWORD, "${solr.password}");
+        runner.assertNotValid();
+
+        runner.setVariable("solr.password", "solrRocksPassword");
+        runner.assertValid();
+    }
+
+    @Test
+    public void testJAASClientAppNameValidation() {
+        final TestRunner runner = TestRunners.newTestRunner(PutSolrContentStream.class);
+        runner.setProperty(PutSolrContentStream.SOLR_TYPE, PutSolrContentStream.SOLR_TYPE_STANDARD.getValue());
+        runner.setProperty(PutSolrContentStream.SOLR_LOCATION, "http://localhost:8443/solr");
+        runner.assertValid();
+
+        // clear the jaas config system property if it was set
+        final String jaasConfig = System.getProperty(Krb5HttpClientConfigurer.LOGIN_CONFIG_PROP);
+        if (!StringUtils.isEmpty(jaasConfig)) {
+            System.clearProperty(Krb5HttpClientConfigurer.LOGIN_CONFIG_PROP);
+        }
+
+        // should be invalid if we have a client name but not config file
+        runner.setProperty(PutSolrContentStream.JAAS_CLIENT_APP_NAME, "Client");
+        runner.assertNotValid();
+
+        // should be invalid if we have a client name that is not in the config file
+        final File jaasConfigFile = new File("src/test/resources/jaas-client.conf");
+        System.setProperty(Krb5HttpClientConfigurer.LOGIN_CONFIG_PROP, jaasConfigFile.getAbsolutePath());
+        runner.assertNotValid();
+
+        // should be valid now that the name matches up with the config file
+        runner.setProperty(PutSolrContentStream.JAAS_CLIENT_APP_NAME, "SolrJClient");
+        runner.assertValid();
+    }
+
+    /**
+     * Mock implementation so we don't need to have a real keystore/truststore available for testing.
+     */
+    private class MockSSLContextService extends AbstractControllerService implements SSLContextService {
+
+        @Override
+        public SSLContext createSSLContext(ClientAuth clientAuth) throws ProcessException {
+            return null;
+        }
+
+        @Override
+        public String getTrustStoreFile() {
+            return null;
+        }
+
+        @Override
+        public String getTrustStoreType() {
+            return null;
+        }
+
+        @Override
+        public String getTrustStorePassword() {
+            return null;
+        }
+
+        @Override
+        public boolean isTrustStoreConfigured() {
+            return false;
+        }
+
+        @Override
+        public String getKeyStoreFile() {
+            return null;
+        }
+
+        @Override
+        public String getKeyStoreType() {
+            return null;
+        }
+
+        @Override
+        public String getKeyStorePassword() {
+            return null;
+        }
+
+        @Override
+        public String getKeyPassword() {
+            return null;
+        }
+
+        @Override
+        public boolean isKeyStoreConfigured() {
+            return false;
+        }
+
+        @Override
+        public String getSslAlgorithm() {
+            return null;
+        }
     }
 
     // Override the createSolrClient method to inject a custom SolrClient.
@@ -365,7 +521,7 @@ public class TestPutSolrContentStream {
         }
 
         @Override
-        protected SolrClient createSolrClient(ProcessContext context) {
+        protected SolrClient createSolrClient(ProcessContext context, String solrLocation) {
             mockSolrClient = new SolrClient() {
                 @Override
                 public NamedList<Object> request(SolrRequest solrRequest, String s) throws SolrServerException, IOException {
@@ -374,7 +530,7 @@ public class TestPutSolrContentStream {
                 }
 
                 @Override
-                public void shutdown() {
+                public void close() {
 
                 }
 
@@ -395,7 +551,7 @@ public class TestPutSolrContentStream {
         }
 
         @Override
-        protected SolrClient createSolrClient(ProcessContext context) {
+        protected SolrClient createSolrClient(ProcessContext context, String solrLocation) {
             mockSolrClient = Mockito.mock(SolrClient.class);
             try {
                 when(mockSolrClient.request(any(SolrRequest.class),
@@ -418,7 +574,7 @@ public class TestPutSolrContentStream {
             this.solrClient = solrClient;
         }
         @Override
-        protected SolrClient createSolrClient(ProcessContext context) {
+        protected SolrClient createSolrClient(ProcessContext context, String solrLocation) {
             return solrClient;
         }
     }
@@ -431,7 +587,6 @@ public class TestPutSolrContentStream {
 
         return EmbeddedSolrServerFactory.create(
                 EmbeddedSolrServerFactory.DEFAULT_SOLR_HOME,
-                EmbeddedSolrServerFactory.DEFAULT_CORE_HOME,
                 coreName, relPath);
     }
 

@@ -71,6 +71,18 @@ public class MockProvenanceReporter implements ProvenanceReporter {
         events.clear();
     }
 
+    void migrate(final MockProvenanceReporter newOwner, final Set<String> flowFileIds) {
+        final Set<ProvenanceEventRecord> toMove = new LinkedHashSet<>();
+        for (final ProvenanceEventRecord event : events) {
+            if (flowFileIds.contains(event.getFlowFileUuid())) {
+                toMove.add(event);
+            }
+        }
+
+        events.removeAll(toMove);
+        newOwner.events.addAll(toMove);
+    }
+
     /**
      * Generates a Fork event for the given child and parents but does not
      * register the event. This is useful so that a ProcessSession has the
@@ -124,7 +136,40 @@ public class MockProvenanceReporter implements ProvenanceReporter {
 
         try {
             final ProvenanceEventRecord record = build(flowFile, ProvenanceEventType.RECEIVE)
-                .setTransitUri(transitUri).setSourceSystemFlowFileIdentifier(sourceSystemFlowFileIdentifier).setEventDuration(transmissionMillis).setDetails(details).build();
+                .setTransitUri(transitUri)
+                .setSourceSystemFlowFileIdentifier(sourceSystemFlowFileIdentifier)
+                .setEventDuration(transmissionMillis)
+                .setDetails(details)
+                .build();
+            events.add(record);
+        } catch (final Exception e) {
+            logger.error("Failed to generate Provenance Event due to " + e);
+            if (logger.isDebugEnabled()) {
+                logger.error("", e);
+            }
+        }
+    }
+
+    @Override
+    public void fetch(final FlowFile flowFile, final String transitUri) {
+        fetch(flowFile, transitUri, -1L);
+    }
+
+    @Override
+    public void fetch(final FlowFile flowFile, final String transitUri, final long transmissionMillis) {
+        fetch(flowFile, transitUri, null, transmissionMillis);
+    }
+
+    @Override
+    public void fetch(final FlowFile flowFile, final String transitUri, final String details, final long transmissionMillis) {
+        verifyFlowFileKnown(flowFile);
+
+        try {
+            final ProvenanceEventRecord record = build(flowFile, ProvenanceEventType.FETCH)
+                .setTransitUri(transitUri)
+                .setEventDuration(transmissionMillis)
+                .setDetails(details)
+                .build();
             events.add(record);
         } catch (final Exception e) {
             logger.error("Failed to generate Provenance Event due to " + e);

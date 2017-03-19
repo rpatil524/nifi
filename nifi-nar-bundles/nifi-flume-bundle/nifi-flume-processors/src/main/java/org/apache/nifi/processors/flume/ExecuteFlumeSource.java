@@ -19,9 +19,6 @@ package org.apache.nifi.processors.flume;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
 import org.apache.flume.EventDeliveryException;
 import org.apache.flume.EventDrivenSource;
 import org.apache.flume.PollableSource;
@@ -29,12 +26,14 @@ import org.apache.flume.Source;
 import org.apache.flume.channel.ChannelProcessor;
 import org.apache.flume.conf.Configurables;
 import org.apache.flume.source.EventDrivenSourceRunner;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.Restricted;
 import org.apache.nifi.annotation.behavior.TriggerSerially;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
-
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.Validator;
 import org.apache.nifi.processor.ProcessContext;
@@ -42,16 +41,21 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.ProcessSessionFactory;
 import org.apache.nifi.processor.ProcessorInitializationContext;
 import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.SchedulingContext;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * This processor runs a Flume source
  */
-@Tags({"flume", "hadoop", "get", "source"})
-@CapabilityDescription("Execute a Flume source. Each Flume Event is sent to the success relationship as a FlowFile")
 @TriggerSerially
+@Tags({"flume", "hadoop", "get", "source", "restricted"})
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
+@CapabilityDescription("Execute a Flume source. Each Flume Event is sent to the success relationship as a FlowFile")
+@Restricted("Provides operator the ability to execute arbitrary Flume configurations assuming all permissions that NiFi has.")
 public class ExecuteFlumeSource extends AbstractFlumeProcessor {
 
     public static final PropertyDescriptor SOURCE_TYPE = new PropertyDescriptor.Builder()
@@ -113,7 +117,7 @@ public class ExecuteFlumeSource extends AbstractFlumeProcessor {
     }
 
     @OnScheduled
-    public void onScheduled(final SchedulingContext context) {
+    public void onScheduled(final ProcessContext context) {
         try {
             source = SOURCE_FACTORY.create(
                     context.getProperty(SOURCE_NAME).getValue(),

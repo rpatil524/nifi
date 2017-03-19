@@ -28,23 +28,24 @@ import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
+import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.apache.nifi.controller.repository.FlowFileRecord;
+import org.apache.nifi.controller.repository.claim.ContentClaim;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
-
 import org.junit.Assert;
 
-public class MockFlowFile implements FlowFile {
+public class MockFlowFile implements FlowFileRecord {
 
     private final Map<String, String> attributes = new HashMap<>();
 
     private final long id;
     private final long entryDate;
-    private final Set<String> lineageIdentifiers = new HashSet<>();
     private final long creationTime;
     private boolean penalized = false;
 
@@ -59,17 +60,36 @@ public class MockFlowFile implements FlowFile {
 
         final String uuid = UUID.randomUUID().toString();
         attributes.put(CoreAttributes.UUID.key(), uuid);
-        lineageIdentifiers.add(uuid);
     }
 
     public MockFlowFile(final long id, final FlowFile toCopy) {
-        this(id);
+        this.creationTime = System.nanoTime();
+        this.id = id;
+        entryDate = System.currentTimeMillis();
+
+        final Map<String, String> attributesToCopy = toCopy.getAttributes();
+        String filename = attributesToCopy.get(CoreAttributes.FILENAME.key());
+        if (filename == null) {
+            filename = String.valueOf(System.nanoTime()) + ".mockFlowFile";
+        }
+        attributes.put(CoreAttributes.FILENAME.key(), filename);
+
+        String path = attributesToCopy.get(CoreAttributes.PATH.key());
+        if (path == null) {
+            path = "target";
+        }
+        attributes.put(CoreAttributes.PATH.key(), path);
+
+        String uuid = attributesToCopy.get(CoreAttributes.UUID.key());
+        if (uuid == null) {
+            uuid = UUID.randomUUID().toString();
+        }
+        attributes.put(CoreAttributes.UUID.key(), uuid);
+
         attributes.putAll(toCopy.getAttributes());
         final byte[] dataToCopy = ((MockFlowFile) toCopy).data;
         this.data = new byte[dataToCopy.length];
         System.arraycopy(dataToCopy, 0, this.data, 0, dataToCopy.length);
-
-        lineageIdentifiers.addAll(toCopy.getLineageIdentifiers());
     }
 
     void setPenalized() {
@@ -78,11 +98,6 @@ public class MockFlowFile implements FlowFile {
 
     public long getCreationTime() {
         return creationTime;
-    }
-
-    @Override
-    public Set<String> getLineageIdentifiers() {
-        return lineageIdentifiers;
     }
 
     @Override
@@ -150,7 +165,7 @@ public class MockFlowFile implements FlowFile {
 
     @Override
     public int hashCode() {
-        return (int) id;
+        return new HashCodeBuilder(7, 13).append(id).toHashCode();
     }
 
     @Override
@@ -158,8 +173,11 @@ public class MockFlowFile implements FlowFile {
         if (obj == null) {
             return false;
         }
-        if (obj instanceof MockFlowFile) {
-            return ((MockFlowFile) obj).id == this.id;
+        if (obj == this) {
+            return true;
+        }
+        if (obj instanceof FlowFile) {
+            return ((FlowFile) obj).getId() == this.id;
         }
         return false;
     }
@@ -170,7 +188,7 @@ public class MockFlowFile implements FlowFile {
 
     public void assertAttributeNotExists(final String attributeName) {
         Assert.assertFalse("Attribute " + attributeName + " not exists with value " + attributes.get(attributeName),
-                attributes.containsKey(attributeName));
+            attributes.containsKey(attributeName));
     }
 
     public void assertAttributeEquals(final String attributeName, final String expectedValue) {
@@ -250,7 +268,7 @@ public class MockFlowFile implements FlowFile {
 
                 if ((fromStream & 0xFF) != (data[i] & 0xFF)) {
                     Assert.fail("FlowFile content differs from input at byte " + bytesRead + " with input having value "
-                            + (fromStream & 0xFF) + " and FlowFile having value " + (data[i] & 0xFF));
+                        + (fromStream & 0xFF) + " and FlowFile having value " + (data[i] & 0xFF));
                 }
 
                 bytesRead++;
@@ -273,5 +291,53 @@ public class MockFlowFile implements FlowFile {
     @Override
     public Long getLastQueueDate() {
         return entryDate;
+    }
+
+    @Override
+    public long getPenaltyExpirationMillis() {
+        return -1;
+    }
+
+    @Override
+    public ContentClaim getContentClaim() {
+        return null;
+    }
+
+    @Override
+    public long getContentClaimOffset() {
+        return 0;
+    }
+
+    @Override
+    public long getLineageStartIndex() {
+        return 0;
+    }
+
+    @Override
+    public long getQueueDateIndex() {
+        return 0;
+    }
+
+    public boolean isAttributeEqual(final String attributeName, final String expectedValue) {
+        // unknown attribute name, so cannot be equal.
+        if (attributes.containsKey(attributeName) == false) {
+            return false;
+        }
+
+        String value = attributes.get(attributeName);
+        return Objects.equals(expectedValue, value);
+    }
+
+    public boolean isContentEqual(String expected) {
+        return isContentEqual(expected, Charset.forName("UTF-8"));
+    }
+
+    public boolean isContentEqual(String expected, final Charset charset) {
+        final String value = new String(this.data, charset);
+        return Objects.equals(expected, value);
+    }
+
+    public boolean isContentEqual(final byte[] expected) {
+        return Arrays.equals(expected, this.data);
     }
 }

@@ -21,14 +21,30 @@
             <immediateFlush>false</immediateFlush>
         </encoder>
     </appender>
-    
+
+    <appender name="TARGET_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>target/log.txt</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>target/log_%d{yyyy-MM-dd_HH}.%i.txt</fileNamePattern>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>10KB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+            <!-- keep 30 log files worth of history -->
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%date %level [%thread] %logger{40} %msg%n</pattern>
+            <immediateFlush>true</immediateFlush>
+        </encoder>
+    </appender>
     <!-- valid logging levels: TRACE, DEBUG, INFO, WARN, ERROR -->
     <logger name="org.apache.nifi" level="INFO"/>
-    
+    <logger name="org.apache.nifi.processors.standard.util.crypto" level="DEBUG"/>
+
     <!-- Logger for managing logging statements for nifi clusters. -->
     <logger name="org.apache.nifi.cluster" level="INFO"/>
 
-    <!-- 
+    <!--
         Logger for logging HTTP requests received by the web server.  Setting
         log level to 'debug' activates HTTP request logging.
     -->
@@ -41,9 +57,12 @@
     <logger name="com.sun.jersey.spi.container.servlet.WebComponent" level="ERROR"/>
 
     <logger name="org.apache.nifi.processors.standard" level="DEBUG"/>
+    <logger name="target.file" level="DEBUG" additivity="true">
+        <appender-ref ref="TARGET_FILE"/>
+    </logger>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>
-    
+
 </configuration>

@@ -17,27 +17,36 @@
 package org.apache.nifi.web.api.dto;
 
 import com.wordnik.swagger.annotations.ApiModelProperty;
-import java.util.Date;
-import java.util.List;
+import org.apache.nifi.web.api.dto.util.DateTimeAdapter;
+
 import javax.xml.bind.annotation.XmlType;
 import javax.xml.bind.annotation.adapters.XmlJavaTypeAdapter;
-import org.apache.nifi.web.api.dto.util.DateTimeAdapter;
+import java.util.Collection;
+import java.util.Date;
 
 /**
  * Details of a remote process group in this NiFi.
  */
 @XmlType(name = "remoteProcessGroup")
-public class RemoteProcessGroupDTO extends NiFiComponentDTO {
+public class RemoteProcessGroupDTO extends ComponentDTO {
 
     private String targetUri;
+    private String targetUris;
     private Boolean targetSecure;
 
     private String name;
     private String comments;
     private String communicationsTimeout;
     private String yieldDuration;
+    private String transportProtocol;
+    private String localNetworkInterface;
+    private String proxyHost;
+    private Integer proxyPort;
+    private String proxyUser;
+    private String proxyPassword;
 
-    private List<String> authorizationIssues;
+    private Collection<String> authorizationIssues;
+    private Collection<String> validationErrors;
     private Boolean transmitting;
 
     private Integer inputPortCount;
@@ -68,13 +77,58 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
     }
 
     /**
-     * @return target uri of this remote process group
+     * @return target uri of this remote process group.
+     * If target uri is not set, but uris are set, then returns the first url in the urls.
+     * If neither target uri nor uris are set, then returns null.
      */
     @ApiModelProperty(
-            value = "The target URI of the remote process group."
+            value = "The target URI of the remote process group." +
+                    " If target uri is not set, but uris are set, then returns the first url in the urls." +
+                    " If neither target uri nor uris are set, then returns null."
     )
     public String getTargetUri() {
+        if (targetUri == null || targetUri.length() == 0) {
+            synchronized (this) {
+                if (targetUri == null || targetUri.length() == 0) {
+                    if (targetUris != null && targetUris.length() > 0) {
+                        if (targetUris.indexOf(',') > -1) {
+                            targetUri = targetUris.substring(0, targetUris.indexOf(','));
+                        } else {
+                            targetUri = targetUris;
+                        }
+                    }
+                }
+            }
+        }
+
         return this.targetUri;
+    }
+
+    public void setTargetUris(String targetUris) {
+        this.targetUris = targetUris;
+    }
+
+    /**
+     * @return target uris of this remote process group
+     * If targetUris was not set but target uri was set, then returns a collection containing the single uri.
+     * If neither target uris nor uri were set, then returns null.
+     */
+    @ApiModelProperty(
+            value = "The target URI of the remote process group." +
+                    " If target uris is not set but target uri is set," +
+                    " then returns a collection containing the single target uri." +
+                    " If neither target uris nor uris are set, then returns null."
+    )
+    public String getTargetUris() {
+        if (targetUris == null || targetUris.length() == 0) {
+            synchronized (this) {
+                if (targetUris == null || targetUris.length() == 0) {
+                    targetUris = targetUri;
+                }
+            }
+        }
+
+        return this.targetUris;
     }
 
     /**
@@ -111,11 +165,11 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
     @ApiModelProperty(
             value = "Any remote authorization issues for the remote process group."
     )
-    public List<String> getAuthorizationIssues() {
+    public Collection<String> getAuthorizationIssues() {
         return authorizationIssues;
     }
 
-    public void setAuthorizationIssues(List<String> authorizationIssues) {
+    public void setAuthorizationIssues(Collection<String> authorizationIssues) {
         this.authorizationIssues = authorizationIssues;
     }
 
@@ -151,7 +205,7 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
      * @return the time period used for the timeout when communicating with this RemoteProcessGroup
      */
     @ApiModelProperty(
-            value = "The time period used for the timeout when commicating with the target."
+            value = "The time period used for the timeout when communicating with the target."
     )
     public String getCommunicationsTimeout() {
         return communicationsTimeout;
@@ -207,7 +261,7 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
      * @return number of active remote output ports
      */
     @ApiModelProperty(
-            value = "The number of acitve remote output ports."
+            value = "The number of active remote output ports."
     )
     public Integer getActiveRemoteOutputPortCount() {
         return activeRemoteOutputPortCount;
@@ -278,7 +332,8 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
      */
     @XmlJavaTypeAdapter(DateTimeAdapter.class)
     @ApiModelProperty(
-            value = "The timestamp when this remote process group was last refreshed."
+            value = "The timestamp when this remote process group was last refreshed.",
+            dataType = "string"
     )
     public Date getFlowRefreshed() {
         return flowRefreshed;
@@ -288,4 +343,63 @@ public class RemoteProcessGroupDTO extends NiFiComponentDTO {
         this.flowRefreshed = flowRefreshed;
     }
 
+    public String getTransportProtocol() {
+        return transportProtocol;
+    }
+
+    public void setTransportProtocol(String transportProtocol) {
+        this.transportProtocol = transportProtocol;
+    }
+
+    @ApiModelProperty("The local network interface to send/receive data. If not specified, any local address is used. If clustered, all nodes must have an interface with this identifier.")
+    public String getLocalNetworkInterface() {
+        return localNetworkInterface;
+    }
+
+    public void setLocalNetworkInterface(String localNetworkInterface) {
+        this.localNetworkInterface = localNetworkInterface;
+    }
+
+    @ApiModelProperty(
+            "The validation errors for the remote process group. These validation errors represent the problems with the remote process group that must be resolved before it can transmit."
+    )
+    public Collection<String> getValidationErrors() {
+        return validationErrors;
+    }
+
+    public void setValidationErrors(Collection<String> validationErrors) {
+        this.validationErrors = validationErrors;
+    }
+
+    public String getProxyHost() {
+        return proxyHost;
+    }
+
+    public void setProxyHost(String proxyHost) {
+        this.proxyHost = proxyHost;
+    }
+
+    public Integer getProxyPort() {
+        return proxyPort;
+    }
+
+    public void setProxyPort(Integer proxyPort) {
+        this.proxyPort = proxyPort;
+    }
+
+    public String getProxyUser() {
+        return proxyUser;
+    }
+
+    public void setProxyUser(String proxyUser) {
+        this.proxyUser = proxyUser;
+    }
+
+    public String getProxyPassword() {
+        return proxyPassword;
+    }
+
+    public void setProxyPassword(String proxyPassword) {
+        this.proxyPassword = proxyPassword;
+    }
 }

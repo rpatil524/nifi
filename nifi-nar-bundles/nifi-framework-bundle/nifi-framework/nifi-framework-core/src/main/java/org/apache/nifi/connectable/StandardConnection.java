@@ -16,30 +16,48 @@
  */
 package org.apache.nifi.connectable;
 
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.apache.nifi.authorization.AccessDeniedException;
+import org.apache.nifi.authorization.AuthorizationResult;
+import org.apache.nifi.authorization.AuthorizationResult.Result;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.Resource;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.controller.ProcessScheduler;
+import org.apache.nifi.controller.StandardFlowFileQueue;
+import org.apache.nifi.controller.queue.FlowFileQueue;
+import org.apache.nifi.controller.repository.FlowFileRecord;
+import org.apache.nifi.controller.repository.FlowFileRepository;
+import org.apache.nifi.controller.repository.FlowFileSwapManager;
+import org.apache.nifi.controller.repository.claim.ResourceClaimManager;
+import org.apache.nifi.events.EventReporter;
+import org.apache.nifi.groups.ProcessGroup;
+import org.apache.nifi.processor.FlowFileFilter;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.provenance.ProvenanceEventRepository;
+import org.apache.nifi.remote.RemoteGroupPort;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
-import org.apache.nifi.controller.FlowFileQueue;
-import org.apache.nifi.controller.ProcessScheduler;
-import org.apache.nifi.controller.StandardFlowFileQueue;
-import org.apache.nifi.controller.repository.FlowFileRecord;
-import org.apache.nifi.groups.ProcessGroup;
-import org.apache.nifi.processor.FlowFileFilter;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.util.NiFiProperties;
-
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
+import java.util.stream.Collectors;
 
 /**
- * Models a connection between connectable components. A connection may contain one or more relationships that map the source component to the destination component.
+ * Models a connection between connectable components. A connection may contain
+ * one or more relationships that map the source component to the destination
+ * component.
  */
 public final class StandardConnection implements Connection {
 
@@ -65,7 +83,8 @@ public final class StandardConnection implements Connection {
         destination = new AtomicReference<>(builder.destination);
         relationships = new AtomicReference<>(Collections.unmodifiableCollection(builder.relationships));
         scheduler = builder.scheduler;
-        flowFileQueue = new StandardFlowFileQueue(id, this, scheduler, NiFiProperties.getInstance().getQueueSwapThreshold());
+        flowFileQueue = new StandardFlowFileQueue(id, this, builder.flowFileRepository, builder.provenanceRepository, builder.resourceClaimManager,
+                scheduler, builder.swapManager, builder.eventReporter, builder.queueSwapThreshold);
         hashCode = new HashCodeBuilder(7, 67).append(id).toHashCode();
     }
 
@@ -87,6 +106,98 @@ public final class StandardConnection implements Connection {
     @Override
     public void setName(final String name) {
         this.name.set(name);
+    }
+
+    @Override
+    public Authorizable getParentAuthorizable() {
+        return getProcessGroup();
+    }
+
+    @Override
+    public Resource getResource() {
+        return new Resource() {
+            @Override
+            public String getIdentifier() {
+                return "/connections/" + StandardConnection.this.getIdentifier();
+            }
+
+            @Override
+            public String getName() {
+                String name = StandardConnection.this.getName();
+
+                final Collection<Relationship> relationships = getRelationships();
+                if (name == null && CollectionUtils.isNotEmpty(relationships)) {
+                    name = StringUtils.join(relationships.stream().map(relationship -> relationship.getName()).collect(Collectors.toSet()), ", ");
+                }
+
+                if (name == null) {
+                    name = "Connection";
+                }
+
+                return name;
+            }
+
+            @Override
+            public String getSafeDescription() {
+                return "Connection " + StandardConnection.this.getIdentifier();
+            }
+        };
+    }
+
+    @Override
+    public Authorizable getSourceAuthorizable() {
+        final Connectable sourceConnectable = getSource();
+        final Authorizable sourceAuthorizable;
+
+        // if the source is a remote group port, authorize according to the RPG
+        if (sourceConnectable instanceof RemoteGroupPort) {
+            sourceAuthorizable = ((RemoteGroupPort) sourceConnectable).getRemoteProcessGroup();
+        } else {
+            sourceAuthorizable = sourceConnectable;
+        }
+
+        return sourceAuthorizable;
+    }
+
+    @Override
+    public Authorizable getDestinationAuthorizable() {
+        final Connectable destinationConnectable = getDestination();
+        final Authorizable destinationAuthorizable;
+
+        // if the destination is a remote group port, authorize according to the RPG
+        if (destinationConnectable instanceof RemoteGroupPort) {
+            destinationAuthorizable = ((RemoteGroupPort) destinationConnectable).getRemoteProcessGroup();
+        } else {
+            destinationAuthorizable = destinationConnectable;
+        }
+
+        return destinationAuthorizable;
+    }
+
+    @Override
+    public AuthorizationResult checkAuthorization(Authorizer authorizer, RequestAction action, NiFiUser user, Map<String, String> resourceContext) {
+        if (user == null) {
+            return AuthorizationResult.denied("Unknown user.");
+        }
+
+        // check the source
+        final AuthorizationResult sourceResult = getSourceAuthorizable().checkAuthorization(authorizer, action, user, resourceContext);
+        if (Result.Denied.equals(sourceResult.getResult())) {
+            return sourceResult;
+        }
+
+        // check the destination
+        return getDestinationAuthorizable().checkAuthorization(authorizer, action, user, resourceContext);
+    }
+
+    @Override
+    public void authorize(Authorizer authorizer, RequestAction action, NiFiUser user, Map<String, String> resourceContext) throws AccessDeniedException {
+        if (user == null) {
+            throw new AccessDeniedException("Unknown user.");
+        }
+
+        getSourceAuthorizable().authorize(authorizer, action, user, resourceContext);
+        getDestinationAuthorizable().authorize(authorizer, action, user, resourceContext);
     }
 
     @Override
@@ -229,12 +340,14 @@ public final class StandardConnection implements Connection {
 
     @Override
     public String toString() {
-        return "Connection[ID=" + id + ",Name=" + name.get() + ",Source=" + getSource() + ",Destination=" + getDestination() + ",Relationships=" + getRelationships();
+        return "Connection[Source ID=" + id + ",Dest ID=" + getDestination().getIdentifier() + "]";
     }
 
     /**
-     * Gives this Connection ownership of the given FlowFile and allows the Connection to hold on to the FlowFile but NOT provide the FlowFile to consumers. This allows us to ensure that the
-     * Connection is not deleted during the middle of a Session commit.
+     * Gives this Connection ownership of the given FlowFile and allows the
+     * Connection to hold on to the FlowFile but NOT provide the FlowFile to
+     * consumers. This allows us to ensure that the Connection is not deleted
+     * during the middle of a Session commit.
      *
      * @param flowFile to add
      */
@@ -259,6 +372,12 @@ public final class StandardConnection implements Connection {
         private Connectable source;
         private Connectable destination;
         private Collection<Relationship> relationships;
+        private FlowFileSwapManager swapManager;
+        private EventReporter eventReporter;
+        private FlowFileRepository flowFileRepository;
+        private ProvenanceEventRepository provenanceRepository;
+        private ResourceClaimManager resourceClaimManager;
+        private int queueSwapThreshold;
 
         public Builder(final ProcessScheduler scheduler) {
             this.scheduler = scheduler;
@@ -305,12 +424,54 @@ public final class StandardConnection implements Connection {
             return this;
         }
 
+        public Builder swapManager(final FlowFileSwapManager swapManager) {
+            this.swapManager = swapManager;
+            return this;
+        }
+
+        public Builder eventReporter(final EventReporter eventReporter) {
+            this.eventReporter = eventReporter;
+            return this;
+        }
+
+        public Builder flowFileRepository(final FlowFileRepository flowFileRepository) {
+            this.flowFileRepository = flowFileRepository;
+            return this;
+        }
+
+        public Builder provenanceRepository(final ProvenanceEventRepository provenanceRepository) {
+            this.provenanceRepository = provenanceRepository;
+            return this;
+        }
+
+        public Builder resourceClaimManager(final ResourceClaimManager resourceClaimManager) {
+            this.resourceClaimManager = resourceClaimManager;
+            return this;
+        }
+
+        public Builder queueSwapThreshold(final int queueSwapThreshold) {
+            this.queueSwapThreshold = queueSwapThreshold;
+            return this;
+        }
+
         public StandardConnection build() {
             if (source == null) {
                 throw new IllegalStateException("Cannot build a Connection without a Source");
             }
             if (destination == null) {
                 throw new IllegalStateException("Cannot build a Connection without a Destination");
+            }
+            if (swapManager == null) {
+                throw new IllegalStateException("Cannot build a Connection without a FlowFileSwapManager");
+            }
+            if (flowFileRepository == null) {
+                throw new IllegalStateException("Cannot build a Connection without a FlowFile Repository");
+            }
+            if (provenanceRepository == null) {
+                throw new IllegalStateException("Cannot build a Connection without a Provenance Repository");
+            }
+            if (resourceClaimManager == null) {
+                throw new IllegalStateException("Cannot build a Connection without a Resource Claim Manager");
             }
 
             if (relationships == null) {
@@ -337,12 +498,19 @@ public final class StandardConnection implements Connection {
     @Override
     public void verifyCanDelete() {
         if (!flowFileQueue.isEmpty()) {
-            throw new IllegalStateException("Queue not empty for " + this);
+            throw new IllegalStateException("Queue not empty for " + this.getIdentifier());
         }
 
         if (source.isRunning()) {
             if (!ConnectableType.FUNNEL.equals(source.getConnectableType())) {
-                throw new IllegalStateException("Source of Connection (" + source + ") is running");
+                throw new IllegalStateException("Source of Connection (" + source.getIdentifier() + ") is running");
+            }
+        }
+
+        final Connectable dest = destination.get();
+        if (dest.isRunning()) {
+            if (!ConnectableType.FUNNEL.equals(dest.getConnectableType())) {
+                throw new IllegalStateException("Destination of Connection (" + dest.getIdentifier() + ") is running");
             }
         }
     }

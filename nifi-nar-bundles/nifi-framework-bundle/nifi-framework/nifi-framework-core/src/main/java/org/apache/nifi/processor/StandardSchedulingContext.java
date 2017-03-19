@@ -16,11 +16,15 @@
  */
 package org.apache.nifi.processor;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.nifi.attribute.expression.language.Query;
+import org.apache.nifi.attribute.expression.language.Query.Range;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.controller.ProcessorNode;
 import org.apache.nifi.controller.service.ControllerServiceNode;
@@ -32,11 +36,13 @@ public class StandardSchedulingContext implements SchedulingContext {
     private final ProcessContext processContext;
     private final ControllerServiceProvider serviceProvider;
     private final ProcessorNode processorNode;
+    private final StateManager stateManager;
 
-    public StandardSchedulingContext(final ProcessContext processContext, final ControllerServiceProvider serviceProvider, final ProcessorNode processorNode) {
+    public StandardSchedulingContext(final ProcessContext processContext, final ControllerServiceProvider serviceProvider, final ProcessorNode processorNode, final StateManager stateManager) {
         this.processContext = processContext;
         this.serviceProvider = serviceProvider;
         this.processorNode = processorNode;
+        this.stateManager = stateManager;
     }
 
     @Override
@@ -47,11 +53,11 @@ public class StandardSchedulingContext implements SchedulingContext {
         }
 
         if (serviceNode.getState() != ControllerServiceState.ENABLED) {
-            throw new IllegalStateException("Cannot lease Controller Service because Controller Service " + serviceNode.getProxiedControllerService() + " is not currently enabled");
+            throw new IllegalStateException("Cannot lease Controller Service because Controller Service " + serviceNode.getProxiedControllerService().getIdentifier() + " is not currently enabled");
         }
 
         if (!serviceNode.isValid()) {
-            throw new IllegalStateException("Cannot lease Controller Service because Controller Service " + serviceNode.getProxiedControllerService() + " is not currently valid");
+            throw new IllegalStateException("Cannot lease Controller Service because Controller Service " + serviceNode.getProxiedControllerService().getIdentifier() + " is not currently valid");
         }
 
         serviceNode.addReference(processorNode);
@@ -118,7 +124,32 @@ public class StandardSchedulingContext implements SchedulingContext {
     }
 
     @Override
+    public boolean hasNonLoopConnection() {
+        return processContext.hasNonLoopConnection();
+    }
+
+    @Override
     public boolean hasConnection(Relationship relationship) {
         return processContext.hasConnection(relationship);
+    }
+
+    @Override
+    public boolean isExpressionLanguagePresent(PropertyDescriptor property) {
+        if (property == null || !property.isExpressionLanguageSupported()) {
+            return false;
+        }
+
+        final List<Range> elRanges = Query.extractExpressionRanges(getProperty(property).getValue());
+        return (elRanges != null && !elRanges.isEmpty());
+    }
+
+    @Override
+    public StateManager getStateManager() {
+        return stateManager;
+    }
+
+    @Override
+    public String getName() {
+        return processorNode.getName();
     }
 }

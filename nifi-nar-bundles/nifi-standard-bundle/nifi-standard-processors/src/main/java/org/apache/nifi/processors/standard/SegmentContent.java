@@ -26,16 +26,19 @@ import java.util.Set;
 import java.util.UUID;
 
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.processor.ProcessContext;
@@ -48,6 +51,7 @@ import org.apache.nifi.processor.util.StandardValidators;
 @SideEffectFree
 @SupportsBatching
 @Tags({"segment", "split"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Segments a FlowFile into multiple smaller segments on byte boundaries. Each segment is given the following attributes: "
         + "fragment.identifier, fragment.index, fragment.count, segment.original.filename; these attributes can then be used by the "
         + "MergeContent processor in order to reconstitute the original FlowFile")
@@ -77,15 +81,15 @@ public class SegmentContent extends AbstractProcessor {
     public static final String SEGMENT_ID = "segment.identifier";
     public static final String SEGMENT_INDEX = "segment.index";
     public static final String SEGMENT_COUNT = "segment.count";
-    public static final String SEGMENT_ORIGINAL_FILENAME = "segment.original.filename";
+    public static final String SEGMENT_ORIGINAL_FILENAME = FragmentAttributes.SEGMENT_ORIGINAL_FILENAME.key();
 
-    public static final String FRAGMENT_ID = "fragment.identifier";
-    public static final String FRAGMENT_INDEX = "fragment.index";
-    public static final String FRAGMENT_COUNT = "fragment.count";
+    public static final String FRAGMENT_ID = FragmentAttributes.FRAGMENT_ID.key();
+    public static final String FRAGMENT_INDEX = FragmentAttributes.FRAGMENT_INDEX.key();
+    public static final String FRAGMENT_COUNT = FragmentAttributes.FRAGMENT_COUNT.key();
 
     public static final PropertyDescriptor SIZE = new PropertyDescriptor.Builder()
             .name("Segment Size")
-            .description("The maximum data size for each segment")
+            .description("The maximum data size in bytes for each segment")
             .addValidator(StandardValidators.DATA_SIZE_VALIDATOR)
             .required(true)
             .build();
@@ -177,6 +181,7 @@ public class SegmentContent extends AbstractProcessor {
         }
 
         session.transfer(segmentSet, REL_SEGMENTS);
+        flowFile = FragmentAttributes.copyAttributesToOriginal(session, flowFile, segmentId, totalSegments);
         session.transfer(flowFile, REL_ORIGINAL);
 
         if (totalSegments <= 10) {

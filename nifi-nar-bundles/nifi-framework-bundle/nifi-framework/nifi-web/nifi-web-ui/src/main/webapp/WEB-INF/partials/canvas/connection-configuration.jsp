@@ -15,9 +15,9 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="connection-configuration">
-    <div class="connection-configuration-tab-container">
-        <div id="connection-configuration-tabs"></div>
+<div id="connection-configuration" layout="column" class="hidden large-dialog">
+    <div class="connection-configuration-tab-container dialog-content">
+        <div id="connection-configuration-tabs" class="tab-container"></div>
         <div id="connection-configuration-tabs-content">
             <div id="connection-settings-tab-content" class="configuration-tab">
                 <div class="settings-left">
@@ -36,7 +36,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             FlowFile expiration
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="The maximum amount of time an object may be in the flow before it will be automatically aged out of the flow."/>
+                            <div class="fa fa-question-circle" alt="Info" title="The maximum amount of time an object may be in the flow before it will be automatically aged out of the flow."></div>
                         </div>
                         <div class="setting-field">
                             <input type="text" id="flow-file-expiration" name="flow-file-expiration" class="setting-input"/>
@@ -45,7 +45,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             Back pressure object threshold
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="The maximum number of objects that can be queued before back pressure is applied."/>
+                            <div class="fa fa-question-circle" alt="Info" title="The maximum number of objects that can be queued before back pressure is applied."></div>
                         </div>
                         <div class="setting-field">
                             <input type="text" id="back-pressure-object-threshold" name="back-pressure-object-threshold" class="setting-input"/>
@@ -54,7 +54,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             Back pressure data size threshold
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="The maximum data size of objects that can be queued before back pressure is applied."/>
+                            <div class="fa fa-question-circle" alt="Info" title="The maximum data size of objects that can be queued before back pressure is applied."></div>
                         </div>
                         <div class="setting-field">
                             <input type="text" id="back-pressure-data-size-threshold" name="back-pressure-data-size-threshold" class="setting-input"/>
@@ -66,7 +66,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             Available prioritizers
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="Available prioritizers that could reprioritize FlowFiles in this work queue."/>
+                            <div class="fa fa-question-circle" alt="Info" title="Available prioritizers that could reprioritize FlowFiles in this work queue."></div>
                         </div>
                         <div class="setting-field">
                             <ul id="prioritizer-available"></ul>
@@ -75,7 +75,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             Selected prioritizers
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="Prioritizers that have been selected to reprioritize FlowFiles in this work queue."/>
+                            <div class="fa fa-question-circle" alt="Info" title="Prioritizers that have been selected to reprioritize FlowFiles in this work queue."></div>
                         </div>
                         <div class="setting-field">
                             <ul id="prioritizer-selected"></ul>
@@ -95,7 +95,7 @@
                     <div id="read-only-output-port-source" class="setting hidden">
                         <div class="setting-name">From output</div>
                         <div class="setting-field connection-terminal-label">
-                            <div id="read-only-output-port-name"></div>
+                            <div id="read-only-output-port-name" class="ellipsis"></div>
                         </div>
                     </div>
                     <div id="output-port-source" class="setting hidden">
@@ -107,21 +107,21 @@
                     <div id="input-port-source" class="setting hidden">
                         <div class="setting-name">From input</div>
                         <div class="setting-field connection-terminal-label">
-                            <div id="input-port-source-name" class="label"></div>
+                            <div id="input-port-source-name" class="label ellipsis"></div>
                         </div>
                     </div>
                     <div id="funnel-source" class="setting hidden">
                         <div class="setting-name">From funnel</div>
                         <div class="setting-field connection-terminal-label">
-                            <div id="funnel-source-name" class="label">funnel</div>
+                            <div id="funnel-source-name" class="label ellipsis" title="funnel">funnel</div>
                         </div>
                     </div>
                     <div id="processor-source" class="setting hidden">
                         <div class="setting-name">From processor</div>
                         <div class="setting-field connection-terminal-label">
                             <div id="processor-source-details">
-                                <div id="processor-source-name" class="label"></div>
-                                <div id="processor-source-type"></div>
+                                <div id="processor-source-name" class="label ellipsis"></div>
+                                <div id="processor-source-type" class="ellipsis"></div>
                             </div>
                         </div>
                     </div>
@@ -149,21 +149,21 @@
                     <div id="output-port-destination" class="setting hidden">
                         <div class="setting-name">To output</div>
                         <div class="setting-field connection-terminal-label">
-                            <div id="output-port-destination-name" class="label"></div>
+                            <div id="output-port-destination-name" class="label ellipsis"></div>
                         </div>
                     </div>
                     <div id="funnel-destination" class="setting hidden">
                         <div class="setting-name">To funnel</div>
                         <div class="setting-field connection-terminal-label">
-                            <div id="funnel-source-name" class="label">funnel</div>
+                            <div id="funnel-destination-name" class="label ellipsis" title="funnel">funnel</div>
                         </div>
                     </div>
                     <div id="processor-destination" class="setting hidden">
                         <div class="setting-name">To processor</div>
                         <div class="setting-field connection-terminal-label">
                             <div id="processor-destination-details">
-                                <div id="processor-destination-name" class="label"></div>
-                                <div id="processor-destination-type"></div>
+                                <div id="processor-destination-name" class="label ellipsis"></div>
+                                <div id="processor-destination-type" class="ellipsis"></div>
                             </div>
                         </div>
                     </div>
@@ -176,5 +176,5 @@
                 </div>
             </div>
         </div>
-    </div>    
+    </div>
 </div>

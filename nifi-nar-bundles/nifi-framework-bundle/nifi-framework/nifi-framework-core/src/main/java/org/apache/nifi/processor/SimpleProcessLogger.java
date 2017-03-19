@@ -16,15 +16,15 @@
  */
 package org.apache.nifi.processor;
 
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.logging.LogLevel;
 import org.apache.nifi.logging.LogRepository;
 import org.apache.nifi.logging.LogRepositoryFactory;
-import org.apache.nifi.logging.ProcessorLog;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class SimpleProcessLogger implements ProcessorLog {
+public class SimpleProcessLogger implements ComponentLog {
 
     private final Logger logger;
     private final LogRepository logRepository;
@@ -62,12 +62,23 @@ public class SimpleProcessLogger implements ProcessorLog {
     }
 
     @Override
-    public void warn(final String msg, final Throwable t) {
-        warn("{} " + msg, new Object[]{component}, t);
+    public void warn(String msg, final Throwable t) {
+        if (!isWarnEnabled()) {
+            return;
+        }
+
+        msg = "{} " + msg;
+        final Object[] os = {component, t.toString(), t};
+        logger.warn(msg, os);
+        logRepository.addLogMessage(LogLevel.WARN, msg, os, t);
     }
 
     @Override
     public void warn(String msg, Object[] os) {
+        if (!isWarnEnabled()) {
+            return;
+        }
+
         if (lastArgIsException(os)) {
             warn(msg, translateException(os), (Throwable) os[os.length - 1]);
         } else {
@@ -80,6 +91,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void warn(String msg, Object[] os, final Throwable t) {
+        if (!isWarnEnabled()) {
+            return;
+        }
+
         os = addProcessorAndThrowable(os, t);
         msg = "{} " + msg + ": {}";
 
@@ -92,6 +107,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void warn(String msg) {
+        if (!isWarnEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         final Object[] os = {component};
         logger.warn(msg, component);
@@ -100,14 +119,22 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void trace(String msg, Throwable t) {
+        if (!isTraceEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
-        final Object[] os = {component};
-        logger.trace(msg, os, t);
+        final Object[] os = {component, t.toString(), t};
+        logger.trace(msg, os);
         logRepository.addLogMessage(LogLevel.TRACE, msg, os, t);
     }
 
     @Override
     public void trace(String msg, Object[] os) {
+        if (!isTraceEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         os = addProcessor(os);
         logger.trace(msg, os);
@@ -116,6 +143,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void trace(String msg) {
+        if (!isTraceEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         final Object[] os = {component};
         logger.trace(msg, os);
@@ -124,6 +155,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void trace(String msg, Object[] os, Throwable t) {
+        if (!isTraceEnabled()) {
+            return;
+        }
+
         os = addProcessorAndThrowable(os, t);
         msg = "{} " + msg + ": {}";
 
@@ -133,34 +168,38 @@ public class SimpleProcessLogger implements ProcessorLog {
     }
 
     @Override
-    public boolean isWarnEnabled() {
-        return logger.isWarnEnabled();
-    }
-
-    @Override
     public boolean isTraceEnabled() {
         return logger.isTraceEnabled();
     }
 
     @Override
+    public boolean isDebugEnabled() {
+        return logger.isDebugEnabled() || logRepository.isDebugEnabled();
+    }
+
+    @Override
     public boolean isInfoEnabled() {
-        return logger.isInfoEnabled();
+        return logger.isInfoEnabled() || logRepository.isInfoEnabled();
+    }
+
+    @Override
+    public boolean isWarnEnabled() {
+        return logger.isWarnEnabled() || logRepository.isWarnEnabled();
     }
 
     @Override
     public boolean isErrorEnabled() {
-        return logger.isErrorEnabled();
-    }
-
-    @Override
-    public boolean isDebugEnabled() {
-        return logger.isDebugEnabled();
+        return logger.isErrorEnabled() || logRepository.isErrorEnabled();
     }
 
     @Override
     public void info(String msg, Throwable t) {
+        if (!isInfoEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
-        final Object[] os = {component};
+        final Object[] os = {component, t.toString()};
 
         logger.info(msg, os);
         if (logger.isDebugEnabled()) {
@@ -171,6 +210,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void info(String msg, Object[] os) {
+        if (!isInfoEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         os = addProcessor(os);
 
@@ -180,6 +223,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void info(String msg) {
+        if (!isInfoEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         final Object[] os = {component};
 
@@ -189,6 +236,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void info(String msg, Object[] os, Throwable t) {
+        if (!isInfoEnabled()) {
+            return;
+        }
+
         os = addProcessorAndThrowable(os, t);
         msg = "{} " + msg + ": {}";
 
@@ -206,18 +257,27 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void error(String msg, Throwable t) {
-        msg = "{} " + msg;
-        final Object[] os = {component};
-
-        logger.error(msg, os, t);
-        if (logger.isDebugEnabled()) {
-            logger.error("", t);
+        if (!isErrorEnabled()) {
+            return;
         }
-        logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
+
+        msg = "{} " + msg;
+        Object[] os = t == null ? new Object[]{component} : new Object[]{component, t.toString()};
+        logger.error(msg, os);
+        if (t != null){
+            logger.error("", t);
+            logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
+        } else {
+            logRepository.addLogMessage(LogLevel.ERROR, msg, os);
+        }
     }
 
     @Override
     public void error(String msg, Object[] os) {
+        if (!isErrorEnabled()) {
+            return;
+        }
+
         if (lastArgIsException(os)) {
             error(msg, translateException(os), (Throwable) os[os.length - 1]);
         } else {
@@ -230,11 +290,21 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void error(String msg) {
-        msg = "{} " + msg;
-        final Object[] os = {component};
+        this.error(msg, (Throwable) null);
+    }
+
+    @Override
+    public void error(String msg, Object[] os, Throwable t) {
+        if (!isErrorEnabled()) {
+            return;
+        }
+
+        os = addProcessorAndThrowable(os, t);
+        msg = "{} " + msg + ": {}";
 
         logger.error(msg, os);
-        logRepository.addLogMessage(LogLevel.ERROR, msg, os);
+        logger.error("", t);
+        logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
     }
 
     private Object[] addProcessorAndThrowable(final Object[] os, final Throwable t) {
@@ -249,19 +319,11 @@ public class SimpleProcessLogger implements ProcessorLog {
     }
 
     @Override
-    public void error(String msg, Object[] os, Throwable t) {
-        os = addProcessorAndThrowable(os, t);
-        msg = "{} " + msg + ": {}";
-
-        logger.error(msg, os);
-        if (logger.isDebugEnabled()) {
-            logger.error("", t);
-        }
-        logRepository.addLogMessage(LogLevel.ERROR, msg, os, t);
-    }
-
-    @Override
     public void debug(String msg, Throwable t) {
+        if (!isDebugEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         final Object[] os = {component};
 
@@ -271,6 +333,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void debug(String msg, Object[] os) {
+        if (!isDebugEnabled()) {
+            return;
+        }
+
         os = addProcessor(os);
         msg = "{} " + msg;
 
@@ -280,6 +346,10 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void debug(String msg, Object[] os, Throwable t) {
+        if (!isDebugEnabled()) {
+            return;
+        }
+
         os = addProcessorAndThrowable(os, t);
         msg = "{} " + msg + ": {}";
 
@@ -292,11 +362,103 @@ public class SimpleProcessLogger implements ProcessorLog {
 
     @Override
     public void debug(String msg) {
+        if (!isDebugEnabled()) {
+            return;
+        }
+
         msg = "{} " + msg;
         final Object[] os = {component};
 
         logger.debug(msg, os);
         logRepository.addLogMessage(LogLevel.DEBUG, msg, os);
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, t);
+                break;
+            case INFO:
+                info(msg, t);
+                break;
+            case TRACE:
+                trace(msg, t);
+                break;
+            case WARN:
+                warn(msg, t);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os);
+                break;
+            case INFO:
+                info(msg, os);
+                break;
+            case TRACE:
+                trace(msg, os);
+                break;
+            case WARN:
+                warn(msg, os);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg) {
+        switch (level) {
+            case DEBUG:
+                debug(msg);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg);
+                break;
+            case INFO:
+                info(msg);
+                break;
+            case TRACE:
+                trace(msg);
+                break;
+            case WARN:
+                warn(msg);
+                break;
+        }
+    }
+
+    @Override
+    public void log(LogLevel level, String msg, Object[] os, Throwable t) {
+        switch (level) {
+            case DEBUG:
+                debug(msg, os, t);
+                break;
+            case ERROR:
+            case FATAL:
+                error(msg, os, t);
+                break;
+            case INFO:
+                info(msg, os, t);
+                break;
+            case TRACE:
+                trace(msg, os, t);
+                break;
+            case WARN:
+                warn(msg, os, t);
+                break;
+        }
     }
 
 }

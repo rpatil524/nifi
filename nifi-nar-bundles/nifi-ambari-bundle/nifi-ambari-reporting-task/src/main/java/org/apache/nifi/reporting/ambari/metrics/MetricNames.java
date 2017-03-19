@@ -21,6 +21,9 @@ package org.apache.nifi.reporting.ambari.metrics;
  */
 public interface MetricNames {
 
+    // Metric Name separator
+    String METRIC_NAME_SEPARATOR = ".";
+
     // NiFi Metrics
     String FLOW_FILES_RECEIVED = "FlowFilesReceivedLast5Minutes";
     String BYTES_RECEIVED = "BytesReceivedLast5Minutes";
@@ -31,7 +34,8 @@ public interface MetricNames {
     String BYTES_READ = "BytesReadLast5Minutes";
     String BYTES_WRITTEN = "BytesWrittenLast5Minutes";
     String ACTIVE_THREADS = "ActiveThreads";
-    String TOTAL_TASK_DURATION = "TotalTaskDurationSeconds";
+    String TOTAL_TASK_DURATION_SECONDS = "TotalTaskDurationSeconds";
+    String TOTAL_TASK_DURATION_NANOS = "TotalTaskDurationNanoSeconds";
 
     // JVM Metrics
     String JVM_UPTIME = "jvm.uptime";

@@ -21,6 +21,7 @@ import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnEnabled;
 import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.components.Validator;
@@ -96,6 +97,15 @@ public class StandardSSLContextService extends AbstractControllerService impleme
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .sensitive(true)
             .build();
+    static final PropertyDescriptor KEY_PASSWORD = new PropertyDescriptor.Builder()
+            .name("key-password")
+            .displayName("Key Password")
+            .description("The password for the key. If this is not specified, but the Keystore Filename, Password, and Type are specified, "
+                    + "then the Keystore Password will be assumed to be the same as the Key Password.")
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .sensitive(true)
+            .required(false)
+            .build();
     public static final PropertyDescriptor SSL_ALGORITHM = new PropertyDescriptor.Builder()
             .name("SSL Protocol")
             .defaultValue("TLS")
@@ -108,11 +118,17 @@ public class StandardSSLContextService extends AbstractControllerService impleme
 
     private static final List<PropertyDescriptor> properties;
     private ConfigurationContext configContext;
+    private boolean isValidated;
+
+    // TODO: This can be made configurable if necessary
+    private static final int VALIDATION_CACHE_EXPIRATION = 5;
+    private int validationCacheCount = 0;
 
     static {
         List<PropertyDescriptor> props = new ArrayList<>();
         props.add(KEYSTORE);
         props.add(KEYSTORE_PASSWORD);
+        props.add(KEY_PASSWORD);
         props.add(KEYSTORE_TYPE);
         props.add(TRUSTSTORE);
         props.add(TRUSTSTORE_PASSWORD);
@@ -148,6 +164,12 @@ public class StandardSSLContextService extends AbstractControllerService impleme
 
         // verify that the filename, password, and type match
         createSSLContext(ClientAuth.REQUIRED);
+    }
+
+    @Override
+    public void onPropertyModified(PropertyDescriptor descriptor, String oldValue, String newValue) {
+        super.onPropertyModified(descriptor, oldValue, newValue);
+        resetValidationCache();
     }
 
     private static Validator createFileExistsAndReadableValidator() {
@@ -189,6 +211,16 @@ public class StandardSSLContextService extends AbstractControllerService impleme
     @Override
     protected Collection<ValidationResult> customValidate(ValidationContext validationContext) {
         final Collection<ValidationResult> results = new ArrayList<>();
+
+        if (isValidated) {
+            validationCacheCount++;
+            if (validationCacheCount > VALIDATION_CACHE_EXPIRATION) {
+                resetValidationCache();
+            } else {
+                return results;
+            }
+        }
+
         results.addAll(validateStore(validationContext.getProperties(), KeystoreValidationGroup.KEYSTORE));
         results.addAll(validateStore(validationContext.getProperties(), KeystoreValidationGroup.TRUSTSTORE));
 
@@ -217,12 +249,27 @@ public class StandardSSLContextService extends AbstractControllerService impleme
                         .build());
             }
         }
+
+        isValidated = results.isEmpty();
+
         return results;
+    }
+
+    private void resetValidationCache() {
+        validationCacheCount = 0;
+        isValidated = false;
+    }
+
+    protected int getValidationCacheExpiration() {
+        return VALIDATION_CACHE_EXPIRATION;
     }
 
     private void verifySslConfig(final ValidationContext validationContext) throws ProcessException {
         final String protocol = validationContext.getProperty(SSL_ALGORITHM).getValue();
         try {
+            final PropertyValue keyPasswdProp = validationContext.getProperty(KEY_PASSWORD);
+            final char[] keyPassword = keyPasswdProp.isSet() ? keyPasswdProp.getValue().toCharArray() : null;
+
             final String keystoreFile = validationContext.getProperty(KEYSTORE).getValue();
             if (keystoreFile == null) {
                 SslContextFactory.createTrustSslContext(
@@ -237,6 +284,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
                 SslContextFactory.createSslContext(
                         validationContext.getProperty(KEYSTORE).getValue(),
                         validationContext.getProperty(KEYSTORE_PASSWORD).getValue().toCharArray(),
+                        keyPassword,
                         validationContext.getProperty(KEYSTORE_TYPE).getValue(),
                         protocol);
                 return;
@@ -245,6 +293,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
             SslContextFactory.createSslContext(
                     validationContext.getProperty(KEYSTORE).getValue(),
                     validationContext.getProperty(KEYSTORE_PASSWORD).getValue().toCharArray(),
+                    keyPassword,
                     validationContext.getProperty(KEYSTORE_TYPE).getValue(),
                     validationContext.getProperty(TRUSTSTORE).getValue(),
                     validationContext.getProperty(TRUSTSTORE_PASSWORD).getValue().toCharArray(),
@@ -260,19 +309,26 @@ public class StandardSSLContextService extends AbstractControllerService impleme
     public SSLContext createSSLContext(final ClientAuth clientAuth) throws ProcessException {
         final String protocol = configContext.getProperty(SSL_ALGORITHM).getValue();
         try {
+            final PropertyValue keyPasswdProp = configContext.getProperty(KEY_PASSWORD);
+            final char[] keyPassword = keyPasswdProp.isSet() ? keyPasswdProp.getValue().toCharArray() : null;
+
             final String keystoreFile = configContext.getProperty(KEYSTORE).getValue();
             if (keystoreFile == null) {
+                // If keystore not specified, create SSL Context based only on trust store.
                 return SslContextFactory.createTrustSslContext(
                         configContext.getProperty(TRUSTSTORE).getValue(),
                         configContext.getProperty(TRUSTSTORE_PASSWORD).getValue().toCharArray(),
                         configContext.getProperty(TRUSTSTORE_TYPE).getValue(),
                         protocol);
             }
+
             final String truststoreFile = configContext.getProperty(TRUSTSTORE).getValue();
             if (truststoreFile == null) {
+                // If truststore not specified, create SSL Context based only on key store.
                 return SslContextFactory.createSslContext(
                         configContext.getProperty(KEYSTORE).getValue(),
                         configContext.getProperty(KEYSTORE_PASSWORD).getValue().toCharArray(),
+                        keyPassword,
                         configContext.getProperty(KEYSTORE_TYPE).getValue(),
                         protocol);
             }
@@ -280,6 +336,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
             return SslContextFactory.createSslContext(
                     configContext.getProperty(KEYSTORE).getValue(),
                     configContext.getProperty(KEYSTORE_PASSWORD).getValue().toCharArray(),
+                    keyPassword,
                     configContext.getProperty(KEYSTORE_TYPE).getValue(),
                     configContext.getProperty(TRUSTSTORE).getValue(),
                     configContext.getProperty(TRUSTSTORE_PASSWORD).getValue().toCharArray(),
@@ -327,6 +384,11 @@ public class StandardSSLContextService extends AbstractControllerService impleme
     }
 
     @Override
+    public String getKeyPassword() {
+        return configContext.getProperty(KEY_PASSWORD).getValue();
+    }
+
+    @Override
     public boolean isKeyStoreConfigured() {
         return getKeyStoreFile() != null && getKeyStorePassword() != null && getKeyStoreType() != null;
     }
@@ -371,8 +433,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
                         .build());
             } else {
                 try {
-                    final boolean storeValid = CertificateUtils
-                            .isStoreValid(file.toURI().toURL(), KeystoreType.valueOf(type), password.toCharArray());
+                    final boolean storeValid = CertificateUtils.isStoreValid(file.toURI().toURL(), KeystoreType.valueOf(type), password.toCharArray());
                     if (!storeValid) {
                         results.add(new ValidationResult.Builder()
                                 .subject(keystoreDesc + " Properties")
@@ -404,7 +465,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
         return count;
     }
 
-    public static enum KeystoreValidationGroup {
+    public enum KeystoreValidationGroup {
 
         KEYSTORE, TRUSTSTORE
     }
@@ -428,7 +489,7 @@ public class StandardSSLContextService extends AbstractControllerService impleme
 
         final int numProtocols = supportedProtocols.size();
 
-        // Sort for consistent presentation in configuraiton views
+        // Sort for consistent presentation in configuration views
         final List<String> supportedProtocolList = new ArrayList<>(supportedProtocols);
         Collections.sort(supportedProtocolList);
 

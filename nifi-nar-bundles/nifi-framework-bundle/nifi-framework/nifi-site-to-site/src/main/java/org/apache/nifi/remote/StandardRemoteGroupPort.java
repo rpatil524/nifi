@@ -21,7 +21,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,12 +32,18 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import javax.net.ssl.SSLContext;
 
+import org.apache.nifi.authorization.Resource;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.resource.ResourceFactory;
+import org.apache.nifi.authorization.resource.ResourceType;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.connectable.Connection;
 import org.apache.nifi.controller.ProcessScheduler;
+import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.flowfile.attributes.SiteToSiteAttributes;
 import org.apache.nifi.groups.ProcessGroup;
 import org.apache.nifi.groups.RemoteProcessGroup;
 import org.apache.nifi.processor.ProcessContext;
@@ -46,12 +55,15 @@ import org.apache.nifi.remote.exception.PortNotRunningException;
 import org.apache.nifi.remote.exception.ProtocolException;
 import org.apache.nifi.remote.exception.UnknownPortException;
 import org.apache.nifi.remote.protocol.DataPacket;
+import org.apache.nifi.remote.protocol.http.HttpProxy;
+import org.apache.nifi.remote.util.SiteToSiteRestApiClient;
 import org.apache.nifi.remote.util.StandardDataPacket;
 import org.apache.nifi.reporting.Severity;
 import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.util.FormatUtils;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.util.StopWatch;
+import org.apache.nifi.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,11 +84,17 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
     private final AtomicBoolean targetRunning = new AtomicBoolean(true);
     private final SSLContext sslContext;
     private final TransferDirection transferDirection;
+    private final NiFiProperties nifiProperties;
 
     private final AtomicReference<SiteToSiteClient> clientRef = new AtomicReference<>();
 
+    SiteToSiteClient getSiteToSiteClient() {
+        return clientRef.get();
+    }
+
     public StandardRemoteGroupPort(final String id, final String name, final ProcessGroup processGroup, final RemoteProcessGroup remoteGroup,
-            final TransferDirection direction, final ConnectableType type, final SSLContext sslContext, final ProcessScheduler scheduler) {
+            final TransferDirection direction, final ConnectableType type, final SSLContext sslContext, final ProcessScheduler scheduler,
+        final NiFiProperties nifiProperties) {
         // remote group port id needs to be unique but cannot just be the id of the port
         // in the remote group instance. this supports referencing the same remote
         // instance more than once.
@@ -85,11 +103,12 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
         this.remoteGroup = remoteGroup;
         this.transferDirection = direction;
         this.sslContext = sslContext;
+        this.nifiProperties = nifiProperties;
         setScheduldingPeriod(MINIMUM_SCHEDULING_NANOS + " nanos");
     }
 
-    private static File getPeerPersistenceFile(final String portId) {
-        final File stateDir = NiFiProperties.getInstance().getPersistentStateDirectory();
+    private static File getPeerPersistenceFile(final String portId, final NiFiProperties nifiProperties) {
+        final File stateDir = nifiProperties.getPersistentStateDirectory();
         return new File(stateDir, portId + ".peers");
     }
 
@@ -108,10 +127,21 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
     }
 
     @Override
+    public Resource getResource() {
+        final ResourceType resourceType = ConnectableType.REMOTE_INPUT_PORT.equals(getConnectableType()) ? ResourceType.InputPort : ResourceType.OutputPort;
+        return ResourceFactory.getComponentResource(resourceType, getIdentifier(), getName());
+    }
+
+    @Override
+    public Authorizable getParentAuthorizable() {
+        return getRemoteProcessGroup();
+    }
+
+    @Override
     public void shutdown() {
         super.shutdown();
 
-        final SiteToSiteClient client = clientRef.get();
+        final SiteToSiteClient client = getSiteToSiteClient();
         if (client != null) {
             try {
                 client.close();
@@ -125,13 +155,21 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
     public void onSchedulingStart() {
         super.onSchedulingStart();
 
+        final long penalizationMillis = FormatUtils.getTimeDuration(remoteGroup.getYieldDuration(), TimeUnit.MILLISECONDS);
+
         final SiteToSiteClient client = new SiteToSiteClient.Builder()
-        .url(remoteGroup.getTargetUri().toString())
-        .portIdentifier(getIdentifier())
-        .sslContext(sslContext)
-        .eventReporter(remoteGroup.getEventReporter())
-        .peerPersistenceFile(getPeerPersistenceFile(getIdentifier()))
-        .build();
+                .urls(SiteToSiteRestApiClient.parseClusterUrls(remoteGroup.getTargetUris()))
+                .portIdentifier(getIdentifier())
+                .sslContext(sslContext)
+                .useCompression(isUseCompression())
+                .eventReporter(remoteGroup.getEventReporter())
+                .peerPersistenceFile(getPeerPersistenceFile(getIdentifier(), nifiProperties))
+                .nodePenalizationPeriod(penalizationMillis, TimeUnit.MILLISECONDS)
+                .timeout(remoteGroup.getCommunicationsTimeout(TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS)
+                .transportProtocol(remoteGroup.getTransportProtocol())
+                .httpProxy(new HttpProxy(remoteGroup.getProxyHost(), remoteGroup.getProxyPort(), remoteGroup.getProxyUser(), remoteGroup.getProxyPassword()))
+                .localAddress(remoteGroup.getLocalAddress())
+                .build();
         clientRef.set(client);
     }
 
@@ -147,7 +185,7 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
             return;
         }
 
-        final String url = getRemoteProcessGroup().getTargetUri().toString();
+        final String url = getRemoteProcessGroup().getTargetUri();
 
         // If we are sending data, we need to ensure that we have at least 1 FlowFile to send. Otherwise,
         // we don't want to create a transaction at all.
@@ -161,7 +199,7 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
             firstFlowFile = null;
         }
 
-        final SiteToSiteClient client = clientRef.get();
+        final SiteToSiteClient client = getSiteToSiteClient();
         final Transaction transaction;
         try {
             transaction = client.createTransaction(transferDirection);
@@ -182,7 +220,8 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
             remoteGroup.getEventReporter().reportEvent(Severity.ERROR, CATEGORY, message);
             return;
         } catch (final IOException e) {
-            context.yield();
+            // we do not yield here because the 'peer' will be penalized, and we won't communicate with that particular nifi instance
+            // for a while due to penalization, but we can continue to talk to other nifi instances
             final String message = String.format("%s failed to communicate with %s due to %s", this, url, e.toString());
             logger.error(message);
             if (logger.isDebugEnabled()) {
@@ -260,7 +299,7 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
                 bytesSent += flowFile.getSize();
                 logger.debug("{} Sent {} to {}", this, flowFile, transaction.getCommunicant().getUrl());
 
-                final String transitUri = transaction.getCommunicant().getUrl() + "/" + flowFile.getAttribute(CoreAttributes.UUID.key());
+                final String transitUri = transaction.getCommunicant().createTransitUri(flowFile.getAttribute(CoreAttributes.UUID.key()));
                 session.getProvenanceReporter().send(flowFile, transitUri, "Remote DN=" + userDn, transferMillis, false);
                 session.remove(flowFile);
 
@@ -283,12 +322,12 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
             final long uploadMillis = stopWatch.getDuration(TimeUnit.MILLISECONDS);
             final String dataSize = FormatUtils.formatDataSize(bytesSent);
 
-            session.commit();
             transaction.complete();
+            session.commit();
 
             final String flowFileDescription = (flowFilesSent.size() < 20) ? flowFilesSent.toString() : flowFilesSent.size() + " FlowFiles";
             logger.info("{} Successfully sent {} ({}) to {} in {} milliseconds at a rate of {}", new Object[]{
-                    this, flowFileDescription, dataSize, transaction.getCommunicant().getUrl(), uploadMillis, uploadDataRate});
+                this, flowFileDescription, dataSize, transaction.getCommunicant().getUrl(), uploadMillis, uploadDataRate});
 
             return flowFilesSent.size();
         } catch (final Exception e) {
@@ -314,15 +353,27 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
 
             FlowFile flowFile = session.create();
             flowFile = session.putAllAttributes(flowFile, dataPacket.getAttributes());
+
+            final Communicant communicant = transaction.getCommunicant();
+            final String host = StringUtils.isEmpty(communicant.getHost()) ? "unknown" : communicant.getHost();
+            final String port = communicant.getPort() < 0 ? "unknown" : String.valueOf(communicant.getPort());
+
+            final Map<String,String> attributes = new HashMap<>(2);
+            attributes.put(SiteToSiteAttributes.S2S_HOST.key(), host);
+            attributes.put(SiteToSiteAttributes.S2S_ADDRESS.key(), host + ":" + port);
+
+            flowFile = session.putAllAttributes(flowFile, attributes);
+
             flowFile = session.importFrom(dataPacket.getData(), flowFile);
             final long receiveNanos = System.nanoTime() - start;
+            flowFilesReceived.add(flowFile);
 
             String sourceFlowFileIdentifier = dataPacket.getAttributes().get(CoreAttributes.UUID.key());
             if (sourceFlowFileIdentifier == null) {
                 sourceFlowFileIdentifier = "<Unknown Identifier>";
             }
 
-            final String transitUri = transaction.getCommunicant().getUrl() + sourceFlowFileIdentifier;
+            final String transitUri = transaction.getCommunicant().createTransitUri(sourceFlowFileIdentifier);
             session.getProvenanceReporter().receive(flowFile, transitUri, "urn:nifi:" + sourceFlowFileIdentifier,
                     "Remote DN=" + userDn, TimeUnit.NANOSECONDS.toMillis(receiveNanos));
 
@@ -344,8 +395,8 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
             final String uploadDataRate = stopWatch.calculateDataRate(bytesReceived);
             final long uploadMillis = stopWatch.getDuration(TimeUnit.MILLISECONDS);
             final String dataSize = FormatUtils.formatDataSize(bytesReceived);
-            logger.info("{} Successfully receveied {} ({}) from {} in {} milliseconds at a rate of {}", new Object[]{
-                    this, flowFileDescription, dataSize, transaction.getCommunicant().getUrl(), uploadMillis, uploadDataRate});
+            logger.info("{} Successfully received {} ({}) from {} in {} milliseconds at a rate of {}", new Object[]{
+                this, flowFileDescription, dataSize, transaction.getCommunicant().getUrl(), uploadMillis, uploadDataRate});
         }
 
         return flowFilesReceived.size();
@@ -358,31 +409,44 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
 
     @Override
     public boolean isValid() {
-        return getValidationErrors().isEmpty();
+        if (!targetExists.get()) {
+            return false;
+        }
+
+        if (getConnectableType() == ConnectableType.REMOTE_OUTPUT_PORT && getConnections(Relationship.ANONYMOUS).isEmpty()) {
+            // if it's an output port, ensure that there is an outbound connection
+            return false;
+        }
+
+        final boolean groupValid = remoteGroup.validate().stream()
+            .allMatch(result -> result.isValid());
+
+        return groupValid;
     }
 
     @Override
     public Collection<ValidationResult> getValidationErrors() {
         final Collection<ValidationResult> validationErrors = new ArrayList<>();
-        ValidationResult error = null;
-        if (!targetExists.get()) {
-            error = new ValidationResult.Builder()
-            .explanation(String.format("Remote instance indicates that port '%s' no longer exists.", getName()))
-            .subject(String.format("Remote port '%s'", getName()))
-            .valid(false)
-            .build();
-        } else if (getConnectableType() == ConnectableType.REMOTE_OUTPUT_PORT && getConnections(Relationship.ANONYMOUS).isEmpty()) {
-            error = new ValidationResult.Builder()
-            .explanation(String.format("Port '%s' has no outbound connections", getName()))
-            .subject(String.format("Remote port '%s'", getName()))
-            .valid(false)
-            .build();
-        }
+        if (getScheduledState() == ScheduledState.STOPPED) {
+            ValidationResult error = null;
+            if (!targetExists.get()) {
+                error = new ValidationResult.Builder()
+                        .explanation(String.format("Remote instance indicates that port '%s' no longer exists.", getName()))
+                        .subject(String.format("Remote port '%s'", getName()))
+                        .valid(false)
+                        .build();
+            } else if (getConnectableType() == ConnectableType.REMOTE_OUTPUT_PORT && getConnections(Relationship.ANONYMOUS).isEmpty()) {
+                error = new ValidationResult.Builder()
+                        .explanation(String.format("Port '%s' has no outbound connections", getName()))
+                        .subject(String.format("Remote port '%s'", getName()))
+                        .valid(false)
+                        .build();
+            }
 
-        if (error != null) {
-            validationErrors.add(error);
+            if (error != null) {
+                validationErrors.add(error);
+            }
         }
-
         return validationErrors;
     }
 
@@ -392,6 +456,14 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
 
         if (getConnectableType() == ConnectableType.REMOTE_INPUT_PORT && getIncomingConnections().isEmpty()) {
             throw new IllegalStateException("Port " + getName() + " has no incoming connections");
+        }
+
+        final Optional<ValidationResult> resultOption = remoteGroup.validate().stream()
+            .filter(result -> !result.isValid())
+            .findFirst();
+
+        if (resultOption.isPresent()) {
+            throw new IllegalStateException("Remote Process Group is not valid: " + resultOption.get().toString());
         }
     }
 
@@ -407,7 +479,7 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
 
     @Override
     public String toString() {
-        return "RemoteGroupPort[name=" + getName() + ",target=" + remoteGroup.getTargetUri().toString() + "]";
+        return "RemoteGroupPort[name=" + getName() + ",targets=" + remoteGroup.getTargetUris() + "]";
     }
 
     @Override
@@ -443,5 +515,10 @@ public class StandardRemoteGroupPort extends RemoteGroupPort {
     @Override
     public boolean isSideEffectFree() {
         return false;
+    }
+
+    @Override
+    public String getComponentType() {
+        return "RemoteGroupPort";
     }
 }

@@ -15,26 +15,44 @@
  * limitations under the License.
  */
 
-/* global nf, Slick */
+/* global define, module, require, exports */
 
-nf.CountersTable = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'Slick',
+                'nf.Common',
+                'nf.ErrorHandler'],
+            function ($, Slick, nfCommon, nfErrorHandler) {
+                return (nf.CountersTable = factory($, Slick, nfCommon, nfErrorHandler));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.CountersTable =
+            factory(require('jquery'),
+                require('Slick'),
+                require('nf.Common'),
+                require('nf.ErrorHandler')));
+    } else {
+        nf.CountersTable = factory(root.$,
+            root.Slick,
+            root.nf.Common,
+            root.nf.ErrorHandler);
+    }
+}(this, function ($, Slick, nfCommon, nfErrorHandler) {
+    'use strict';
 
     /**
      * Configuration object used to hold a number of configuration items.
      */
     var config = {
-        filterText: 'Filter',
-        styles: {
-            filterList: 'counters-filter-list'
-        },
         urls: {
-            counters: '../nifi-api/controller/counters'
+            counters: '../nifi-api/counters'
         }
     };
 
     /**
      * Sorts the specified data using the specified sort details.
-     * 
+     *
      * @param {object} sortDetails
      * @param {object} data
      */
@@ -42,12 +60,12 @@ nf.CountersTable = (function () {
         // defines a function for sorting
         var comparer = function (a, b) {
             if (sortDetails.columnId === 'value') {
-                var aCount = nf.Common.parseCount(a[sortDetails.columnId]);
-                var bCount = nf.Common.parseCount(b[sortDetails.columnId]);
+                var aCount = nfCommon.parseCount(a[sortDetails.columnId]);
+                var bCount = nfCommon.parseCount(b[sortDetails.columnId]);
                 return aCount - bCount;
             } else {
-                var aString = nf.Common.isDefinedAndNotNull(a[sortDetails.columnId]) ? a[sortDetails.columnId] : '';
-                var bString = nf.Common.isDefinedAndNotNull(b[sortDetails.columnId]) ? b[sortDetails.columnId] : '';
+                var aString = nfCommon.isDefinedAndNotNull(a[sortDetails.columnId]) ? a[sortDetails.columnId] : '';
+                var bString = nfCommon.isDefinedAndNotNull(b[sortDetails.columnId]) ? b[sortDetails.columnId] : '';
                 return aString === bString ? 0 : aString > bString ? 1 : -1;
             }
         };
@@ -62,12 +80,7 @@ nf.CountersTable = (function () {
      * accounts for that.
      */
     var getFilterText = function () {
-        var filterText = '';
-        var filterField = $('#counters-filter');
-        if (!filterField.hasClass(config.styles.filterList)) {
-            filterText = filterField.val();
-        }
-        return filterText;
+        return $('#counters-filter').val();
     };
 
     /**
@@ -78,7 +91,7 @@ nf.CountersTable = (function () {
         var countersGrid = $('#counters-table').data('gridInstance');
 
         // ensure the grid has been initialized
-        if (nf.Common.isDefinedAndNotNull(countersGrid)) {
+        if (nfCommon.isDefinedAndNotNull(countersGrid)) {
             var countersData = countersGrid.getData();
 
             // update the search criteria
@@ -92,7 +105,7 @@ nf.CountersTable = (function () {
 
     /**
      * Performs the filtering.
-     * 
+     *
      * @param {object} item     The item subject to filtering
      * @param {object} args     Filter arguments
      * @returns {Boolean}       Whether or not to include the item
@@ -113,10 +126,10 @@ nf.CountersTable = (function () {
         // perform the filter
         return item[args.property].search(filterExp) >= 0;
     };
-    
+
     /**
      * Resets the specified counter.
-     * 
+     *
      * @argument {object} item     The counter item
      */
     var resetCounter = function (item) {
@@ -131,7 +144,7 @@ nf.CountersTable = (function () {
             var countersGrid = $('#counters-table').data('gridInstance');
             var countersData = countersGrid.getData();
             countersData.updateItem(counter.id, counter);
-        }).fail(nf.Common.handleAjaxError);
+        }).fail(nfErrorHandler.handleAjaxError);
     };
 
     return {
@@ -142,51 +155,65 @@ nf.CountersTable = (function () {
             // define the function for filtering the list
             $('#counters-filter').keyup(function () {
                 applyFilter();
-            }).focus(function () {
-                if ($(this).hasClass(config.styles.filterList)) {
-                    $(this).removeClass(config.styles.filterList).val('');
-                }
-            }).blur(function () {
-                if ($(this).val() === '') {
-                    $(this).addClass(config.styles.filterList).val(config.filterText);
-                }
-            }).addClass(config.styles.filterList).val(config.filterText);
+            });
 
             // filter type
             $('#counters-filter-type').combo({
                 options: [{
-                        text: 'by name',
-                        value: 'name'
-                    }, {
-                        text: 'by context',
-                        value: 'context'
-                    }],
+                    text: 'by name',
+                    value: 'name'
+                }, {
+                    text: 'by context',
+                    value: 'context'
+                }],
                 select: function (option) {
                     applyFilter();
                 }
             });
 
-            // listen for browser resize events to update the page size
-            $(window).resize(function () {
-                nf.CountersTable.resetTableSize();
-            });
-
             // initialize the templates table
             var countersColumns = [
-                {id: 'context', name: 'Context', field: 'context', sortable: true, resizable: true},
-                {id: 'name', name: 'Name', field: 'name', sortable: true, resizable: true},
-                {id: 'value', name: 'Value', field: 'value', sortable: true, resizable: true, defaultSortAsc: false}
+                {
+                    id: 'context',
+                    name: 'Context',
+                    field: 'context',
+                    sortable: true,
+                    resizable: true
+                },
+                {
+                    id: 'name',
+                    name: 'Name',
+                    field: 'name',
+                    sortable: true,
+                    resizable: true
+                },
+                {
+                    id: 'value',
+                    name: 'Value',
+                    field: 'value',
+                    sortable: true,
+                    resizable: true,
+                    defaultSortAsc: false
+                }
             ];
 
             // only allow dfm's to reset counters
-            if (nf.Common.isDFM()) {
+            if (nfCommon.canModifyCounters()) {
                 // function for formatting the actions column
                 var actionFormatter = function (row, cell, value, columnDef, dataContext) {
-                    return '<img src="images/iconResetCounter.png" title="Reset" class="pointer reset-counter" style="margin-top: 2px;"/>';
+                    return '<div title="Reset Counter" class="pointer reset-counter fa fa-undo" style="margin-top: 2px;"></div>';
                 };
 
                 // add the action column
-                countersColumns.push({id: 'actions', name: '&nbsp;', sortable: false, resizable: false, formatter: actionFormatter, width: 100, maxWidth: 100});
+                countersColumns.push({
+                    id: 'actions',
+                    name: '&nbsp;',
+                    sortable: false,
+                    resizable: false,
+                    formatter: actionFormatter,
+                    width: 100,
+                    maxWidth: 100
+                });
             }
 
             var countersOptions = {
@@ -194,7 +221,8 @@ nf.CountersTable = (function () {
                 enableTextSelectionOnCells: true,
                 enableCellNavigation: false,
                 enableColumnReorder: false,
-                autoEdit: false
+                autoEdit: false,
+                rowHeight: 24
             };
 
             // initialize the dataview
@@ -225,7 +253,7 @@ nf.CountersTable = (function () {
                     sortAsc: args.sortAsc
                 }, countersData);
             });
-            
+
             // configure a click listener
             countersGrid.onClick.subscribe(function (e, args) {
                 var target = $(e.target);
@@ -260,17 +288,17 @@ nf.CountersTable = (function () {
             // initialize the number of display items
             $('#displayed-counters').text('0');
         },
-        
+
         /**
          * Update the size of the grid based on its container's current size.
          */
         resetTableSize: function () {
             var countersGrid = $('#counters-table').data('gridInstance');
-            if (nf.Common.isDefinedAndNotNull(countersGrid)) {
+            if (nfCommon.isDefinedAndNotNull(countersGrid)) {
                 countersGrid.resizeCanvas();
             }
         },
-        
+
         /**
          * Load the processor counters table.
          */
@@ -281,26 +309,27 @@ nf.CountersTable = (function () {
                 dataType: 'json'
             }).done(function (response) {
                 var report = response.counters;
+                var aggregateSnapshot = report.aggregateSnapshot;
 
                 // ensure there are groups specified
-                if (nf.Common.isDefinedAndNotNull(report.counters)) {
+                if (nfCommon.isDefinedAndNotNull(aggregateSnapshot.counters)) {
                     var countersGrid = $('#counters-table').data('gridInstance');
                     var countersData = countersGrid.getData();
 
                     // set the items
-                    countersData.setItems(report.counters);
+                    countersData.setItems(aggregateSnapshot.counters);
                     countersData.reSort();
                     countersGrid.invalidate();
 
                     // update the stats last refreshed timestamp
-                    $('#counters-last-refreshed').text(report.generated);
+                    $('#counters-last-refreshed').text(aggregateSnapshot.generated);
 
                     // update the total number of processors
-                    $('#total-counters').text(report.counters.length);
+                    $('#total-counters').text(aggregateSnapshot.counters.length);
                 } else {
                     $('#total-counters').text('0');
                 }
-            }).fail(nf.Common.handleAjaxError);
+            }).fail(nfErrorHandler.handleAjaxError);
         }
     };
-}());
+}));

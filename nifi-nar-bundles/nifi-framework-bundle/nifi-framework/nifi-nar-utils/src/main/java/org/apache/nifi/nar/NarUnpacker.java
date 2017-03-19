@@ -72,14 +72,16 @@ public final class NarUnpacker {
             final List<File> narFiles = new ArrayList<>();
 
             // make sure the nar directories are there and accessible
-            FileUtils.ensureDirectoryExistAndCanAccess(frameworkWorkingDir);
-            FileUtils.ensureDirectoryExistAndCanAccess(extensionsWorkingDir);
-            FileUtils.ensureDirectoryExistAndCanAccess(docsWorkingDir);
+            FileUtils.ensureDirectoryExistAndCanReadAndWrite(frameworkWorkingDir);
+            FileUtils.ensureDirectoryExistAndCanReadAndWrite(extensionsWorkingDir);
+            FileUtils.ensureDirectoryExistAndCanReadAndWrite(docsWorkingDir);
 
             for (Path narLibraryDir : narLibraryDirs) {
 
                 File narDir = narLibraryDir.toFile();
-                FileUtils.ensureDirectoryExistAndCanAccess(narDir);
+
+                // Test if the source NARs can be read
+                FileUtils.ensureDirectoryExistAndCanRead(narDir);
 
                 File[] dirFiles = narDir.listFiles(NAR_FILTER);
                 if (dirFiles != null) {
@@ -89,6 +91,8 @@ public final class NarUnpacker {
             }
 
             if (!narFiles.isEmpty()) {
+                final long startTime = System.nanoTime();
+                logger.info("Expanding " + narFiles.size() + " NAR files with all processors...");
                 for (File narFile : narFiles) {
                     logger.debug("Expanding NAR file: " + narFile.getAbsolutePath());
 
@@ -143,6 +147,8 @@ public final class NarUnpacker {
                         }
                     }
                 }
+                final long endTime = System.nanoTime();
+                logger.info("NAR loading process took " + (endTime - startTime) + " nanoseconds.");
             }
 
             // attempt to delete any docs files that exist so that any
@@ -258,7 +264,9 @@ public final class NarUnpacker {
     private static void unpackDocumentation(final File jar, final File docsDirectory,
             final ExtensionMapping extensionMapping) throws IOException {
         // determine the components that may have documentation
-        determineDocumentedNiFiComponents(jar, extensionMapping);
+        if (!determineDocumentedNiFiComponents(jar, extensionMapping)) {
+            return;
+        }
 
         // look for all documentation related to each component
         try (final JarFile jarFile = new JarFile(jar)) {
@@ -297,7 +305,10 @@ public final class NarUnpacker {
         }
     }
 
-    private static void determineDocumentedNiFiComponents(final File jar,
+    /*
+     * Returns true if this jar file contains a NiFi component
+     */
+    private static boolean determineDocumentedNiFiComponents(final File jar,
             final ExtensionMapping extensionMapping) throws IOException {
         try (final JarFile jarFile = new JarFile(jar)) {
             final JarEntry processorEntry = jarFile
@@ -307,12 +318,17 @@ public final class NarUnpacker {
             final JarEntry controllerServiceEntry = jarFile
                     .getJarEntry("META-INF/services/org.apache.nifi.controller.ControllerService");
 
+            if (processorEntry==null && reportingTaskEntry==null && controllerServiceEntry==null) {
+                return false;
+            }
+
             extensionMapping.addAllProcessors(determineDocumentedNiFiComponents(jarFile,
                     processorEntry));
             extensionMapping.addAllReportingTasks(determineDocumentedNiFiComponents(jarFile,
                     reportingTaskEntry));
             extensionMapping.addAllControllerServices(determineDocumentedNiFiComponents(jarFile,
                     controllerServiceEntry));
+            return true;
         }
     }
 

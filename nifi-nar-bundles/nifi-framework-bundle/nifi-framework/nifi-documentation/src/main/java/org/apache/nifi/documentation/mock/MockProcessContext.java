@@ -22,6 +22,7 @@ import java.util.Set;
 
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.Relationship;
@@ -89,9 +90,27 @@ public class MockProcessContext implements ProcessContext {
     }
 
     @Override
+    public boolean hasNonLoopConnection() {
+        return true;
+    }
+
+    @Override
     public boolean hasConnection(Relationship relationship) {
         return false;
     }
 
+    @Override
+    public boolean isExpressionLanguagePresent(PropertyDescriptor property) {
+        return false;
+    }
 
+    @Override
+    public StateManager getStateManager() {
+        return null;
+    }
+
+    @Override
+    public String getName() {
+        return null;
+    }
 }

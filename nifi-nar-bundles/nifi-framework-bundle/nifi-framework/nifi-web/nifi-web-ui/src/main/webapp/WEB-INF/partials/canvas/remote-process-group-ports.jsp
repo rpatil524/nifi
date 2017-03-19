@@ -15,7 +15,7 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="remote-process-group-ports">
+<div id="remote-process-group-ports" class="hidden large-dialog">
     <div class="dialog-content">
         <span id="remote-process-group-ports-id" class="hidden"></span>
         <div class="settings-left">
@@ -33,9 +33,9 @@
         <div class="spacer">&nbsp;</div>
         <div class="settings-right">
             <div class="setting">
-                <div class="setting-name">URL</div>
+                <div class="setting-name">URLs</div>
                 <div class="setting-field">
-                    <span id="remote-process-group-ports-url"></span>
+                    <span id="remote-process-group-ports-urls"></span>
                 </div>
             </div>
             <div class="remote-port-header">

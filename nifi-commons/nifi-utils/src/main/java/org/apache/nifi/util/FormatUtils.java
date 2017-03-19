@@ -35,14 +35,15 @@ public class FormatUtils {
     private static final double BYTES_IN_TERABYTE = BYTES_IN_GIGABYTE * 1024;
 
     // for Time Durations
-    private static final String NANOS = join(UNION, "ns", "nano", "nanos", "nanoseconds");
-    private static final String MILLIS = join(UNION, "ms", "milli", "millis", "milliseconds");
+    private static final String NANOS = join(UNION, "ns", "nano", "nanos", "nanosecond", "nanoseconds");
+    private static final String MILLIS = join(UNION, "ms", "milli", "millis", "millisecond", "milliseconds");
     private static final String SECS = join(UNION, "s", "sec", "secs", "second", "seconds");
     private static final String MINS = join(UNION, "m", "min", "mins", "minute", "minutes");
     private static final String HOURS = join(UNION, "h", "hr", "hrs", "hour", "hours");
     private static final String DAYS = join(UNION, "d", "day", "days");
+    private static final String WEEKS = join(UNION, "w", "wk", "wks", "week", "weeks");
 
-    private static final String VALID_TIME_UNITS = join(UNION, NANOS, MILLIS, SECS, MINS, HOURS, DAYS);
+    private static final String VALID_TIME_UNITS = join(UNION, NANOS, MILLIS, SECS, MINS, HOURS, DAYS, WEEKS);
     public static final String TIME_DURATION_REGEX = "(\\d+)\\s*(" + VALID_TIME_UNITS + ")";
     public static final Pattern TIME_DURATION_PATTERN = Pattern.compile(TIME_DURATION_REGEX);
 
@@ -176,6 +177,13 @@ public class FormatUtils {
             case "days":
                 specifiedTimeUnit = TimeUnit.DAYS;
                 break;
+            case "w":
+            case "wk":
+            case "wks":
+            case "week":
+            case "weeks":
+                final long durationVal = Long.parseLong(duration);
+                return desiredUnit.convert(durationVal, TimeUnit.DAYS)*7;
         }
 
         final long durationVal = Long.parseLong(duration);
@@ -202,4 +210,42 @@ public class FormatUtils {
         return sb.toString();
     }
 
+    /**
+     * Formats nanoseconds in the format:
+     * 3 seconds, 8 millis, 3 nanos - if includeTotalNanos = false,
+     * 3 seconds, 8 millis, 3 nanos (3008000003 nanos) - if includeTotalNanos = true
+     *
+     * @param nanos the number of nanoseconds to format
+     * @param includeTotalNanos whether or not to include the total number of nanoseconds in parentheses in the returned value
+     * @return a human-readable String that is a formatted representation of the given number of nanoseconds.
+     */
+    public static String formatNanos(final long nanos, final boolean includeTotalNanos) {
+        final StringBuilder sb = new StringBuilder();
+
+        final long seconds = nanos > 1000000000L ? nanos / 1000000000L : 0L;
+        long millis = nanos > 1000000L ? nanos / 1000000L : 0L;
+        final long nanosLeft = nanos % 1000000L;
+
+        if (seconds > 0) {
+            sb.append(seconds).append(" seconds");
+        }
+        if (millis > 0) {
+            if (seconds > 0) {
+                sb.append(", ");
+                millis -= seconds * 1000L;
+            }
+
+            sb.append(millis).append(" millis");
+        }
+        if (seconds > 0 || millis > 0) {
+            sb.append(", ");
+        }
+        sb.append(nanosLeft).append(" nanos");
+
+        if (includeTotalNanos) {
+            sb.append(" (").append(nanos).append(" nanos)");
+        }
+
+        return sb.toString();
+    }
 }

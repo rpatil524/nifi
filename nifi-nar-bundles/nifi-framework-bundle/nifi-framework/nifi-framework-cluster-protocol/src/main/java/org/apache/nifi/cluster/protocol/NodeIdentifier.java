@@ -16,6 +16,10 @@
  */
 package org.apache.nifi.cluster.protocol;
 
+import javax.xml.bind.annotation.XmlAccessType;
+import javax.xml.bind.annotation.XmlAccessorType;
+import javax.xml.bind.annotation.XmlRootElement;
+
 import org.apache.commons.lang3.StringUtils;
 
 /**
@@ -32,8 +36,9 @@ import org.apache.commons.lang3.StringUtils;
  * @Immutable
  * @Threadsafe
  */
+@XmlRootElement
+@XmlAccessorType(XmlAccessType.FIELD)
 public class NodeIdentifier {
-
     /**
      * the unique identifier for the node
      */
@@ -46,7 +51,8 @@ public class NodeIdentifier {
     private final String apiAddress;
 
     /**
-     * the port to use use for sending requests to the node's external interface
+     * the port to use use for sending requests to the node's external interface,
+     * this can be HTTP API port or HTTPS API port depending on whether //TODO: .
      */
     private final int apiPort;
 
@@ -61,13 +67,37 @@ public class NodeIdentifier {
      */
     private final int socketPort;
 
+    /**
+     * the IP or hostname that external clients should use to communicate with this node via Site-to-Site
+     */
+    private final String siteToSiteAddress;
+
+    /**
+     * the port that external clients should use to communicate with this node via Site-to-Site RAW Socket protocol
+     */
+    private final Integer siteToSitePort;
+
+    /**
+     * the port that external clients should use to communicate with this node via Site-to-Site HTTP protocol,
+     * this can be HTTP API port or HTTPS API port depending on whether siteToSiteSecure or not.
+     */
+    private final Integer siteToSiteHttpApiPort;
+
+    /**
+     * whether or not site-to-site communications with this node are secure
+     */
+    private final Boolean siteToSiteSecure;
+
+
     private final String nodeDn;
 
-    public NodeIdentifier(final String id, final String apiAddress, final int apiPort, final String socketAddress, final int socketPort) {
-        this(id, apiAddress, apiPort, socketAddress, socketPort, null);
+    public NodeIdentifier(final String id, final String apiAddress, final int apiPort, final String socketAddress, final int socketPort,
+        final String siteToSiteAddress, final Integer siteToSitePort, final Integer siteToSiteHttpApiPort, final boolean siteToSiteSecure) {
+        this(id, apiAddress, apiPort, socketAddress, socketPort, siteToSiteAddress, siteToSitePort, siteToSiteHttpApiPort, siteToSiteSecure, null);
     }
 
-    public NodeIdentifier(final String id, final String apiAddress, final int apiPort, final String socketAddress, final int socketPort, final String dn) {
+    public NodeIdentifier(final String id, final String apiAddress, final int apiPort, final String socketAddress, final int socketPort,
+        final String siteToSiteAddress, final Integer siteToSitePort, final Integer siteToSiteHttpApiPort, final boolean siteToSiteSecure, final String dn) {
 
         if (StringUtils.isBlank(id)) {
             throw new IllegalArgumentException("Node ID may not be empty or null.");
@@ -79,6 +109,9 @@ public class NodeIdentifier {
 
         validatePort(apiPort);
         validatePort(socketPort);
+        if (siteToSitePort != null) {
+            validatePort(siteToSitePort);
+        }
 
         this.id = id;
         this.apiAddress = apiAddress;
@@ -86,6 +119,26 @@ public class NodeIdentifier {
         this.socketAddress = socketAddress;
         this.socketPort = socketPort;
         this.nodeDn = dn;
+        this.siteToSiteAddress = siteToSiteAddress == null ? apiAddress : siteToSiteAddress;
+        this.siteToSitePort = siteToSitePort;
+        this.siteToSiteHttpApiPort = siteToSiteHttpApiPort;
+        this.siteToSiteSecure = siteToSiteSecure;
+    }
+
+    /**
+     * This constructor should not be used and exists solely for the use of JAXB
+     */
+    public NodeIdentifier() {
+        this.id = null;
+        this.apiAddress = null;
+        this.apiPort = 0;
+        this.socketAddress = null;
+        this.socketPort = 0;
+        this.nodeDn = null;
+        this.siteToSiteAddress = null;
+        this.siteToSitePort = null;
+        this.siteToSiteHttpApiPort = null;
+        this.siteToSiteSecure = false;
     }
 
     public String getId() {
@@ -117,6 +170,23 @@ public class NodeIdentifier {
             throw new IllegalArgumentException("Port must be inclusively in the range [1, 65535].  Port given: " + port);
         }
     }
+
+    public String getSiteToSiteAddress() {
+        return siteToSiteAddress;
+    }
+
+    public Integer getSiteToSitePort() {
+        return siteToSitePort;
+    }
+
+    public Integer getSiteToSiteHttpApiPort() {
+        return siteToSiteHttpApiPort;
+    }
+
+    public boolean isSiteToSiteSecure() {
+        return siteToSiteSecure;
+    }
+
 
     /**
      * Compares the id of two node identifiers for equality.
@@ -165,6 +235,7 @@ public class NodeIdentifier {
         if (this.socketPort != other.socketPort) {
             return false;
         }
+
         return true;
     }
 
@@ -177,7 +248,7 @@ public class NodeIdentifier {
 
     @Override
     public String toString() {
-        return "[" + "id=" + id + ", apiAddress=" + apiAddress + ", apiPort=" + apiPort + ", socketAddress=" + socketAddress + ", socketPort=" + socketPort + ']';
+        return apiAddress + ":" + apiPort;
     }
 
 }

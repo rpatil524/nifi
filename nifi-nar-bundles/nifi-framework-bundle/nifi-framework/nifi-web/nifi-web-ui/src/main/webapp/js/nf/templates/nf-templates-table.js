@@ -15,40 +15,73 @@
  * limitations under the License.
  */
 
-/* global nf, Slick */
+/* global define, module, require, exports */
 
-nf.TemplatesTable = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'Slick',
+                'nf.Common',
+                'nf.Dialog',
+                'nf.ErrorHandler'],
+            function ($, Slick, nfCommon, nfDialog, nfErrorHandler) {
+                return (nf.TemplatesTable = factory($, Slick, nfCommon, nfDialog, nfErrorHandler));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.TemplatesTable =
+            factory(require('jquery'),
+                require('Slick'),
+                require('nf.Common'),
+                require('nf.Dialog'),
+                require('nf.ErrorHandler')));
+    } else {
+        nf.TemplatesTable = factory(root.$,
+            root.Slick,
+            root.nf.Common,
+            root.nf.Dialog,
+            root.nf.ErrorHandler);
+    }
+}(this, function ($, Slick, nfCommon, nfDialog, nfErrorHandler) {
+    'use strict';
 
     /**
      * Configuration object used to hold a number of configuration items.
      */
     var config = {
-        filterText: 'Filter',
-        styles: {
-            filterList: 'templates-filter-list'
-        },
         urls: {
-            templates: '../nifi-api/controller/templates'
+            templates: '../nifi-api/flow/templates',
+            downloadToken: '../nifi-api/access/download-token'
         }
     };
 
     /**
      * Sorts the specified data using the specified sort details.
-     * 
+     *
      * @param {object} sortDetails
      * @param {object} data
      */
     var sort = function (sortDetails, data) {
         // defines a function for sorting
         var comparer = function (a, b) {
-            if (sortDetails.columnId === 'timestamp') {
-                var aDate = nf.Common.parseDateTime(a[sortDetails.columnId]);
-                var bDate = nf.Common.parseDateTime(b[sortDetails.columnId]);
-                return aDate.getTime() - bDate.getTime();
+            if (a.permissions.canRead && b.permissions.canRead) {
+                if (sortDetails.columnId === 'timestamp') {
+                    var aDate = nfCommon.parseDateTime(a.template[sortDetails.columnId]);
+                    var bDate = nfCommon.parseDateTime(b.template[sortDetails.columnId]);
+                    return aDate.getTime() - bDate.getTime();
+                } else {
+                    var aString = nfCommon.isDefinedAndNotNull(a.template[sortDetails.columnId]) ? a.template[sortDetails.columnId] : '';
+                    var bString = nfCommon.isDefinedAndNotNull(b.template[sortDetails.columnId]) ? b.template[sortDetails.columnId] : '';
+                    return aString === bString ? 0 : aString > bString ? 1 : -1;
+                }
             } else {
-                var aString = nf.Common.isDefinedAndNotNull(a[sortDetails.columnId]) ? a[sortDetails.columnId] : '';
-                var bString = nf.Common.isDefinedAndNotNull(b[sortDetails.columnId]) ? b[sortDetails.columnId] : '';
-                return aString === bString ? 0 : aString > bString ? 1 : -1;
+                if (!a.permissions.canRead && !b.permissions.canRead) {
+                    return 0;
+                }
+                if (a.permissions.canRead) {
+                    return 1;
+                } else {
+                    return -1;
+                }
             }
         };
 
@@ -58,38 +91,54 @@ nf.TemplatesTable = (function () {
 
     /**
      * Prompts the user before attempting to delete the specified template.
-     * 
-     * @argument {object} template     The template
+     *
+     * @argument {object} templateEntity     The template
      */
-    var promptToDeleteTemplate = function (template) {
+    var promptToDeleteTemplate = function (templateEntity) {
         // prompt for deletion
-        nf.Dialog.showYesNoDialog({
-            dialogContent: 'Delete template \'' + nf.Common.escapeHtml(template.name) + '\'?',
-            overlayBackground: false,
+        nfDialog.showYesNoDialog({
+            headerText: 'Delete Template',
+            dialogContent: 'Delete template \'' + nfCommon.escapeHtml(templateEntity.template.name) + '\'?',
             yesHandler: function () {
-                deleteTemplate(template.id);
+                deleteTemplate(templateEntity);
             }
         });
     };
 
     /**
-     * Deletes the template with the specified id.
-     * 
-     * @argument {string} templateId     The template id
+     * Opens the access policies for the specified template.
+     *
+     * @param templateEntity
      */
-    var deleteTemplate = function (templateId) {
+    var openAccessPolicies = function (templateEntity) {
+        // only attempt this if we're within a frame
+        if (top !== window) {
+            // and our parent has canvas utils and shell defined
+            if (nfCommon.isDefinedAndNotNull(parent.nf) && nfCommon.isDefinedAndNotNull(parent.nf.PolicyManagement) && nfCommon.isDefinedAndNotNull(parent.nf.Shell)) {
+                parent.nf.PolicyManagement.showTemplatePolicy(templateEntity);
+                parent.$('#shell-close-button').click();
+            }
+        }
+    };
+
+    /**
+     * Deletes the template with the specified id.
+     *
+     * @argument {string} templateEntity     The template
+     */
+    var deleteTemplate = function (templateEntity) {
         $.ajax({
             type: 'DELETE',
-            url: config.urls.templates + '/' + encodeURIComponent(templateId),
+            url: templateEntity.template.uri,
             dataType: 'json'
         }).done(function () {
             var templatesGrid = $('#templates-table').data('gridInstance');
             var templatesData = templatesGrid.getData();
-            templatesData.deleteItem(templateId);
-            
+            templatesData.deleteItem(templateEntity.id);
+
             // update the total number of templates
             $('#total-templates').text(templatesData.getItems().length);
-        }).fail(nf.Common.handleAjaxError);
+        }).fail(nfErrorHandler.handleAjaxError);
     };
 
     /**
@@ -98,12 +147,7 @@ nf.TemplatesTable = (function () {
      * accounts for that.
      */
     var getFilterText = function () {
-        var filterText = '';
-        var filterField = $('#templates-filter');
-        if (!filterField.hasClass(config.styles.filterList)) {
-            filterText = filterField.val();
-        }
-        return filterText;
+        return $('#templates-filter').val();
     };
 
     /**
@@ -114,7 +158,7 @@ nf.TemplatesTable = (function () {
         var templatesGrid = $('#templates-table').data('gridInstance');
 
         // ensure the grid has been initialized
-        if (nf.Common.isDefinedAndNotNull(templatesGrid)) {
+        if (nfCommon.isDefinedAndNotNull(templatesGrid)) {
             var templatesData = templatesGrid.getData();
 
             // update the search criteria
@@ -128,7 +172,7 @@ nf.TemplatesTable = (function () {
 
     /**
      * Performs the filtering.
-     * 
+     *
      * @param {object} item     The item subject to filtering
      * @param {object} args     Filter arguments
      * @returns {Boolean}       Whether or not to include the item
@@ -147,7 +191,35 @@ nf.TemplatesTable = (function () {
         }
 
         // perform the filter
-        return item[args.property].search(filterExp) >= 0;
+        return item.template[args.property].search(filterExp) >= 0;
+    };
+
+    /**
+     * Downloads the specified template.
+     *
+     * @param {object} templateEntity     The template
+     */
+    var downloadTemplate = function (templateEntity) {
+        nfCommon.getAccessToken(config.urls.downloadToken).done(function (downloadToken) {
+            var parameters = {};
+
+            // conditionally include the download token
+            if (!nfCommon.isBlank(downloadToken)) {
+                parameters['access_token'] = downloadToken;
+            }
+
+            // open the url
+            if ($.isEmptyObject(parameters)) {
+                window.open(templateEntity.template.uri + '/download');
+            } else {
+                window.open(templateEntity.template.uri + '/download' + '?' + $.param(parameters));
+            }
+        }).fail(function () {
+            nfDialog.showOkDialog({
+                headerText: 'Download Template',
+                dialogContent: 'Unable to generate access token for downloading content.'
+            });
+        });
     };
 
     return {
@@ -158,69 +230,128 @@ nf.TemplatesTable = (function () {
             // define the function for filtering the list
             $('#templates-filter').keyup(function () {
                 applyFilter();
-            }).focus(function () {
-                if ($(this).hasClass(config.styles.filterList)) {
-                    $(this).removeClass(config.styles.filterList).val('');
-                }
-            }).blur(function () {
-                if ($(this).val() === '') {
-                    $(this).addClass(config.styles.filterList).val(config.filterText);
-                }
-            }).addClass(config.styles.filterList).val(config.filterText);
+            });
 
             // filter type
             $('#templates-filter-type').combo({
                 options: [{
-                        text: 'by name',
-                        value: 'name'
-                    }, {
-                        text: 'by description',
-                        value: 'description'
-                    }],
+                    text: 'by name',
+                    value: 'name'
+                }, {
+                    text: 'by description',
+                    value: 'description'
+                }],
                 select: function (option) {
                     applyFilter();
                 }
             });
 
-            // listen for browser resize events to update the page size
-            $(window).resize(function () {
-                nf.TemplatesTable.resetTableSize();
-            });
+            var timestampFormatter = function (row, cell, value, columnDef, dataContext) {
+                if (!dataContext.permissions.canRead) {
+                    return '';
+                }
 
-            // enable template uploading if DFM
-            if (nf.Common.isDFM()) {
-                $('#upload-template-container').show();
-            }
+                return dataContext.template.timestamp;
+            };
 
-            // function for formatting the last accessed time
-            var valueFormatter = function (row, cell, value, columnDef, dataContext) {
-                return nf.Common.formatValue(value);
+            var nameFormatter = function (row, cell, value, columnDef, dataContext) {
+                if (!dataContext.permissions.canRead) {
+                    return '<span class="blank">' + dataContext.id + '</span>';
+                }
+
+                return dataContext.template.name;
+            };
+
+            var descriptionFormatter = function (row, cell, value, columnDef, dataContext) {
+                if (!dataContext.permissions.canRead) {
+                    return '';
+                }
+
+                return nfCommon.formatValue(dataContext.template.description);
+            };
+
+            var groupIdFormatter = function (row, cell, value, columnDef, dataContext) {
+                if (!dataContext.permissions.canRead) {
+                    return '';
+                }
+
+                return dataContext.template.groupId;
             };
 
             // function for formatting the actions column
             var actionFormatter = function (row, cell, value, columnDef, dataContext) {
-                var markup = '<img src="images/iconExport.png" title="Download" class="pointer export-template" style="margin-top: 2px;"/>';
+                var markup = '';
+
+                if (dataContext.permissions.canRead === true) {
+                    markup += '<div title="Download" class="pointer export-template icon icon-template-save" style="margin-top: 2px; margin-right: 3px;"></div>';
+                }
 
                 // all DFMs to remove templates
-                if (nf.Common.isDFM()) {
-                    markup += '&nbsp;<img src="images/iconDelete.png" title="Remove Template" class="pointer prompt-to-delete-template" style="margin-top: 2px;"/>';
+                if (dataContext.permissions.canWrite === true) {
+                    markup += '<div title="Remove Template" class="pointer prompt-to-delete-template fa fa-trash" style="margin-top: 2px; margin-right: 3px;"></div>';
                 }
+
+                // allow policy configuration conditionally if embedded in
+                if (top !== window && nfCommon.canAccessTenants()) {
+                    if (nfCommon.isDefinedAndNotNull(parent.nf) && nfCommon.isDefinedAndNotNull(parent.nf.CanvasUtils) && parent.nf.CanvasUtils.isConfigurableAuthorizer()) {
+                        markup += '<div title="Access Policies" class="pointer edit-access-policies fa fa-key" style="margin-top: 2px;"></div>';
+                    }
+                }
+
                 return markup;
             };
 
             // initialize the templates table
             var templatesColumns = [
-                {id: 'timestamp', name: 'Date/Time', field: 'timestamp', sortable: true, defaultSortAsc: false, resizable: false, formatter: valueFormatter, width: 225, maxWidth: 225},
-                {id: 'name', name: 'Name', field: 'name', sortable: true, resizable: true},
-                {id: 'description', name: 'Description', field: 'description', sortable: true, resizable: true, formatter: valueFormatter},
-                {id: 'actions', name: '&nbsp;', sortable: false, resizable: false, formatter: actionFormatter, width: 100, maxWidth: 100}
+                {
+                    id: 'timestamp',
+                    name: 'Date/Time',
+                    sortable: true,
+                    defaultSortAsc: false,
+                    resizable: false,
+                    formatter: timestampFormatter,
+                    width: 225,
+                    maxWidth: 225
+                },
+                {
+                    id: 'name',
+                    name: 'Name',
+                    sortable: true,
+                    resizable: true,
+                    formatter: nameFormatter
+                },
+                {
+                    id: 'description',
+                    name: 'Description',
+                    sortable: true,
+                    resizable: true,
+                    formatter: descriptionFormatter
+                },
+                {
+                    id: 'groupId',
+                    name: 'Process Group Id',
+                    sortable: true,
+                    resizable: true,
+                    formatter: groupIdFormatter
+                },
+                {
+                    id: 'actions',
+                    name: '&nbsp;',
+                    sortable: false,
+                    resizable: false,
+                    formatter: actionFormatter,
+                    width: 100,
+                    maxWidth: 100
+                }
             ];
+
             var templatesOptions = {
                 forceFitColumns: true,
                 enableTextSelectionOnCells: true,
                 enableCellNavigation: false,
                 enableColumnReorder: false,
-                autoEdit: false
+                autoEdit: false,
+                rowHeight: 24
             };
 
             // initialize the dataview
@@ -247,7 +378,7 @@ nf.TemplatesTable = (function () {
             templatesGrid.setSortColumn('timestamp', false);
             templatesGrid.onSort.subscribe(function (e, args) {
                 sort({
-                    columnId: args.sortCol.field,
+                    columnId: args.sortCol.id,
                     sortAsc: args.sortAsc
                 }, templatesData);
             });
@@ -262,9 +393,11 @@ nf.TemplatesTable = (function () {
                 // determine the desired action
                 if (templatesGrid.getColumns()[args.cell].id === 'actions') {
                     if (target.hasClass('export-template')) {
-                        window.open(config.urls.templates + '/' + encodeURIComponent(item.id));
+                        downloadTemplate(item);
                     } else if (target.hasClass('prompt-to-delete-template')) {
                         promptToDeleteTemplate(item);
+                    } else if (target.hasClass('edit-access-policies')) {
+                        openAccessPolicies(item);
                     }
                 }
             });
@@ -288,17 +421,17 @@ nf.TemplatesTable = (function () {
             // initialize the number of displayed items
             $('#displayed-templates').text('0');
         },
-        
+
         /**
          * Update the size of the grid based on its container's current size.
          */
         resetTableSize: function () {
             var templateGrid = $('#templates-table').data('gridInstance');
-            if (nf.Common.isDefinedAndNotNull(templateGrid)) {
+            if (nfCommon.isDefinedAndNotNull(templateGrid)) {
                 templateGrid.resizeCanvas();
             }
         },
-        
+
         /**
          * Load the processor templates table.
          */
@@ -306,13 +439,10 @@ nf.TemplatesTable = (function () {
             return $.ajax({
                 type: 'GET',
                 url: config.urls.templates,
-                data: {
-                    verbose: false
-                },
                 dataType: 'json'
             }).done(function (response) {
                 // ensure there are groups specified
-                if (nf.Common.isDefinedAndNotNull(response.templates)) {
+                if (nfCommon.isDefinedAndNotNull(response.templates)) {
                     var templatesGrid = $('#templates-table').data('gridInstance');
                     var templatesData = templatesGrid.getData();
 
@@ -329,7 +459,7 @@ nf.TemplatesTable = (function () {
                 } else {
                     $('#total-templates').text('0');
                 }
-            }).fail(nf.Common.handleAjaxError);
+            }).fail(nfErrorHandler.handleAjaxError);
         }
     };
-}());
+}));

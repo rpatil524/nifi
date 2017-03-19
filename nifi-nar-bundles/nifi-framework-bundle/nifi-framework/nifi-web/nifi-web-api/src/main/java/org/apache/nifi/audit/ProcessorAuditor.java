@@ -16,6 +16,29 @@
  */
 package org.apache.nifi.audit;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.action.Action;
+import org.apache.nifi.action.Component;
+import org.apache.nifi.action.FlowChangeAction;
+import org.apache.nifi.action.Operation;
+import org.apache.nifi.action.component.details.FlowChangeExtensionDetails;
+import org.apache.nifi.action.details.ActionDetails;
+import org.apache.nifi.action.details.FlowChangeConfigureDetails;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.controller.ProcessorNode;
+import org.apache.nifi.controller.ScheduledState;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
+import org.apache.nifi.web.api.dto.ProcessorDTO;
+import org.apache.nifi.web.dao.ProcessorDAO;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,28 +49,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-
-import org.apache.nifi.action.Action;
-import org.apache.nifi.action.Component;
-import org.apache.nifi.action.Operation;
-import org.apache.nifi.action.component.details.ExtensionDetails;
-import org.apache.nifi.action.details.ActionDetails;
-import org.apache.nifi.action.details.ConfigureDetails;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.controller.ProcessorNode;
-import org.apache.nifi.controller.ScheduledState;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
-import org.apache.nifi.user.NiFiUser;
-import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
-import org.apache.nifi.web.api.dto.ProcessorDTO;
-import org.apache.nifi.web.dao.ProcessorDAO;
-import org.apache.commons.lang3.StringUtils;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.Around;
-import org.aspectj.lang.annotation.Aspect;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Audits processor creation/removal and configuration changes.
@@ -67,6 +68,7 @@ public class ProcessorAuditor extends NiFiAuditor {
     private static final String AUTO_TERMINATED_RELATIONSHIPS = "Auto Terminated Relationships";
     private static final String SCHEDULING_PERIOD = "Run Schedule";
     private static final String SCHEDULING_STRATEGY = "Scheduling Strategy";
+    private static final String EXECUTION_NODE = "Execution Node";
 
     /**
      * Audits the creation of processors via createProcessor().
@@ -99,19 +101,18 @@ public class ProcessorAuditor extends NiFiAuditor {
      * Audits the configuration of a single processor.
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param processorDTO dto
      * @param processorDAO dao
      * @return node
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.ProcessorDAO+) && "
-            + "execution(org.apache.nifi.controller.ProcessorNode updateProcessor(java.lang.String, org.apache.nifi.web.api.dto.ProcessorDTO)) && "
-            + "args(groupId, processorDTO) && "
+            + "execution(org.apache.nifi.controller.ProcessorNode updateProcessor(org.apache.nifi.web.api.dto.ProcessorDTO)) && "
+            + "args(processorDTO) && "
             + "target(processorDAO)")
-    public ProcessorNode updateProcessorAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, ProcessorDTO processorDTO, ProcessorDAO processorDAO) throws Throwable {
-        // determine the initial values for each property/setting thats changing
-        ProcessorNode processor = processorDAO.getProcessor(groupId, processorDTO.getId());
+    public ProcessorNode updateProcessorAdvice(ProceedingJoinPoint proceedingJoinPoint, ProcessorDTO processorDTO, ProcessorDAO processorDAO) throws Throwable {
+        // determine the initial values for each property/setting that's changing
+        ProcessorNode processor = processorDAO.getProcessor(processorDTO.getId());
         final Map<String, String> values = extractConfiguredPropertyValues(processor, processorDTO);
         final ScheduledState scheduledState = processor.getScheduledState();
 
@@ -119,8 +120,7 @@ public class ProcessorAuditor extends NiFiAuditor {
         final ProcessorNode updatedProcessor = (ProcessorNode) proceedingJoinPoint.proceed();
 
         // if no exceptions were thrown, add the processor action...
-        // get the updated verbose state
-        processor = processorDAO.getProcessor(updatedProcessor.getProcessGroup().getIdentifier(), updatedProcessor.getIdentifier());
+        processor = processorDAO.getProcessor(updatedProcessor.getIdentifier());
 
         // get the current user
         NiFiUser user = NiFiUserUtils.getNiFiUser();
@@ -131,8 +131,8 @@ public class ProcessorAuditor extends NiFiAuditor {
             Map<String, String> updatedValues = extractConfiguredPropertyValues(processor, processorDTO);
 
             // create the processor details
-            ExtensionDetails processorDetails = new ExtensionDetails();
-            processorDetails.setType(processor.getProcessor().getClass().getSimpleName());
+            FlowChangeExtensionDetails processorDetails = new FlowChangeExtensionDetails();
+            processorDetails.setType(processor.getComponentType());
 
             // create a processor action
             Date actionTimestamp = new Date();
@@ -169,15 +169,14 @@ public class ProcessorAuditor extends NiFiAuditor {
                         }
                     }
 
-                    final ConfigureDetails actionDetails = new ConfigureDetails();
+                    final FlowChangeConfigureDetails actionDetails = new FlowChangeConfigureDetails();
                     actionDetails.setName(property);
                     actionDetails.setValue(newValue);
                     actionDetails.setPreviousValue(oldValue);
 
                     // create a configuration action
-                    Action configurationAction = new Action();
-                    configurationAction.setUserDn(user.getDn());
-                    configurationAction.setUserName(user.getUserName());
+                    FlowChangeAction configurationAction = new FlowChangeAction();
+                    configurationAction.setUserIdentity(user.getIdentity());
                     configurationAction.setOperation(operation);
                     configurationAction.setTimestamp(actionTimestamp);
                     configurationAction.setSourceId(processor.getIdentifier());
@@ -195,9 +194,8 @@ public class ProcessorAuditor extends NiFiAuditor {
             // determine if the running state has changed and its not disabled
             if (scheduledState != updatedScheduledState) {
                 // create a processor action
-                Action processorAction = new Action();
-                processorAction.setUserDn(user.getDn());
-                processorAction.setUserName(user.getUserName());
+                FlowChangeAction processorAction = new FlowChangeAction();
+                processorAction.setUserIdentity(user.getIdentity());
                 processorAction.setTimestamp(new Date());
                 processorAction.setSourceId(processor.getIdentifier());
                 processorAction.setSourceName(processor.getName());
@@ -234,18 +232,17 @@ public class ProcessorAuditor extends NiFiAuditor {
      * Audits the removal of a processor via deleteProcessor().
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param processorId processor id
      * @param processorDAO dao
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.ProcessorDAO+) && "
-            + "execution(void deleteProcessor(java.lang.String, java.lang.String)) && "
-            + "args(groupId, processorId) && "
+            + "execution(void deleteProcessor(java.lang.String)) && "
+            + "args(processorId) && "
             + "target(processorDAO)")
-    public void removeProcessorAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, String processorId, ProcessorDAO processorDAO) throws Throwable {
+    public void removeProcessorAdvice(ProceedingJoinPoint proceedingJoinPoint, String processorId, ProcessorDAO processorDAO) throws Throwable {
         // get the processor before removing it
-        ProcessorNode processor = processorDAO.getProcessor(groupId, processorId);
+        ProcessorNode processor = processorDAO.getProcessor(processorId);
 
         // remove the processor
         proceedingJoinPoint.proceed();
@@ -280,7 +277,7 @@ public class ProcessorAuditor extends NiFiAuditor {
      * @return action
      */
     public Action generateAuditRecord(ProcessorNode processor, Operation operation, ActionDetails actionDetails) {
-        Action action = null;
+        FlowChangeAction action = null;
 
         // get the current user
         NiFiUser user = NiFiUserUtils.getNiFiUser();
@@ -288,13 +285,12 @@ public class ProcessorAuditor extends NiFiAuditor {
         // ensure the user was found
         if (user != null) {
             // create the processor details
-            ExtensionDetails processorDetails = new ExtensionDetails();
-            processorDetails.setType(processor.getProcessor().getClass().getSimpleName());
+            FlowChangeExtensionDetails processorDetails = new FlowChangeExtensionDetails();
+            processorDetails.setType(processor.getComponentType());
 
             // create the processor action for adding this processor
-            action = new Action();
-            action.setUserDn(user.getDn());
-            action.setUserName(user.getUserName());
+            action = new FlowChangeAction();
+            action.setUserIdentity(user.getIdentity());
             action.setOperation(operation);
             action.setTimestamp(new Date());
             action.setSourceId(processor.getIdentifier());
@@ -372,7 +368,10 @@ public class ProcessorAuditor extends NiFiAuditor {
                 values.put(COMMENTS, processor.getComments());
             }
             if (newConfig.getSchedulingStrategy() != null) {
-                values.put(SCHEDULING_STRATEGY, processor.getSchedulingStrategy().toString());
+                values.put(SCHEDULING_STRATEGY, processor.getSchedulingStrategy().name());
+            }
+            if (newConfig.getExecutionNode() != null) {
+                values.put(EXECUTION_NODE, processor.getExecutionNode().name());
             }
         }
 

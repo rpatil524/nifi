@@ -16,9 +16,11 @@
  */
 package org.apache.nifi.controller;
 
+import org.apache.nifi.components.state.StateManager;
+import org.apache.nifi.kerberos.KerberosContext;
 import org.apache.nifi.logging.ComponentLog;
 
-public interface ControllerServiceInitializationContext {
+public interface ControllerServiceInitializationContext extends KerberosContext {
 
     /**
      * @return the identifier associated with the {@link ControllerService} with
@@ -37,4 +39,9 @@ public interface ControllerServiceInitializationContext {
      * way and generate bulletins when appropriate
      */
     ComponentLog getLogger();
+
+    /**
+     * @return the StateManager that can be used to store and retrieve state for this component
+     */
+    StateManager getStateManager();
 }

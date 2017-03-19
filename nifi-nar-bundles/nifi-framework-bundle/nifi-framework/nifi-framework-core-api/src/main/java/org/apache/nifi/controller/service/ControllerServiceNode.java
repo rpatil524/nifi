@@ -16,12 +16,28 @@
  */
 package org.apache.nifi.controller.service;
 
-import java.util.Set;
-
 import org.apache.nifi.controller.ConfiguredComponent;
 import org.apache.nifi.controller.ControllerService;
+import org.apache.nifi.groups.ProcessGroup;
+
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ScheduledExecutorService;
 
 public interface ControllerServiceNode extends ConfiguredComponent {
+
+    /**
+     * @return the Process Group that this Controller Service belongs to, or <code>null</code> if the Controller Service
+     *         does not belong to any Process Group
+     */
+    ProcessGroup getProcessGroup();
+
+    /**
+     * Sets the Process Group for this Controller Service
+     *
+     * @param group the group that the service belongs to
+     */
+    void setProcessGroup(ProcessGroup group);
 
     /**
      * <p>
@@ -34,6 +50,16 @@ public interface ControllerServiceNode extends ConfiguredComponent {
      * @return a proxied ControllerService that can be addressed outside of the framework.
      */
     ControllerService getProxiedControllerService();
+
+    /**
+     * Returns the list of services that are required to be enabled before this
+     * service is enabled. The returned list is flattened and contains both
+     * immediate and transient dependencies.
+     *
+     * @return list of services required to be enabled before this service is
+     *         enabled
+     */
+    List<ControllerServiceNode> getRequiredControllerServices();
 
     /**
      * <p>
@@ -53,11 +79,27 @@ public interface ControllerServiceNode extends ConfiguredComponent {
      */
     ControllerServiceState getState();
 
-    /**
-     * Updates the state of the Controller Service to the provided new state
-     * @param state the state to set the service to
+     /**
+     * Will enable this service. Enabling of the service typically means
+     * invoking it's operation that is annotated with @OnEnabled.
+     *
+     * @param scheduler
+     *            implementation of {@link ScheduledExecutorService} used to
+     *            initiate service enabling task as well as its re-tries
+     * @param administrativeYieldMillis
+     *            the amount of milliseconds to wait for administrative yield
      */
-    void setState(ControllerServiceState state);
+    void enable(ScheduledExecutorService scheduler, long administrativeYieldMillis);
+
+    /**
+     * Will disable this service. Disabling of the service typically means
+     * invoking it's operation that is annotated with @OnDisabled.
+     *
+     * @param scheduler
+     *            implementation of {@link ScheduledExecutorService} used to
+     *            initiate service disabling task
+     */
+    void disable(ScheduledExecutorService scheduler);
 
     /**
      * @return the ControllerServiceReference that describes which components are referencing this Controller Service
@@ -111,4 +153,18 @@ public interface ControllerServiceNode extends ConfiguredComponent {
     void verifyCanDelete();
 
     void verifyCanUpdate();
+
+    void verifyCanClearState();
+
+    /**
+     * Returns 'true' if this service is active. The service is considered to be
+     * active if and only if it's
+     * {@link #enable(ScheduledExecutorService, long)} operation
+     * has been invoked and the service has been transitioned to ENABLING state.
+     * The service will also remain 'active' after its been transitioned to
+     * ENABLED state. <br>
+     * The service will be de-activated upon invocation of
+     * {@link #disable(ScheduledExecutorService)}.
+     */
+    boolean isActive();
 }

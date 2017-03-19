@@ -26,7 +26,7 @@ import java.util.Set;
 import org.apache.nifi.controller.ControllerService;
 
 /**
- * An immutable object for holding information about a type of processor
+ * An immutable object for holding information about a type of component
  * property.
  *
  */
@@ -79,6 +79,11 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
      * Language
      */
     private final boolean expressionLanguageSupported;
+    /**
+     * indicates whether or not this property represents resources that should be added
+     * to the classpath for this instance of the component
+     */
+    private final boolean dynamicallyModifiesClasspath;
 
     /**
      * the interface of the {@link ControllerService} that this Property refers
@@ -102,6 +107,7 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
         this.required = builder.required;
         this.sensitive = builder.sensitive;
         this.dynamic = builder.dynamic;
+        this.dynamicallyModifiesClasspath = builder.dynamicallyModifiesClasspath;
         this.expressionLanguageSupported = builder.expressionLanguageSupported;
         this.controllerServiceDefinition = builder.controllerServiceDefinition;
         this.validators = new ArrayList<>(builder.validators);
@@ -150,8 +156,7 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
                 }
 
                 final String serviceId = controllerService.getIdentifier();
-                if (!context.getControllerServiceLookup().isControllerServiceEnabled(serviceId)
-                        && !context.getControllerServiceLookup().isControllerServiceEnabling(serviceId)) {
+                if (!isDependentServiceEnableable(context, serviceId)) {
                     return new ValidationResult.Builder()
                             .input(context.getControllerServiceLookup().getControllerServiceName(serviceId))
                             .subject(getName())
@@ -161,16 +166,19 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
                 }
 
                 final Collection<ValidationResult> validationResults = controllerService.validate(context.getControllerServiceValidationContext(controllerService));
+                final List<ValidationResult> invalidResults = new ArrayList<>();
                 for (final ValidationResult result : validationResults) {
                     if (!result.isValid()) {
-                        return new ValidationResult.Builder()
-                                .input(input)
-                                .subject(getName())
-                                .valid(false)
-                                .explanation("Controller Service is not valid: "
-                                        + ((result.getExplanation() == null || result.getExplanation().trim().isEmpty()) ? "(Service does not provide any explanation)" : result.getExplanation()))
-                                .build();
+                        invalidResults.add(result);
                     }
+                }
+                if (!invalidResults.isEmpty()) {
+                    return new ValidationResult.Builder()
+                        .input(input)
+                        .subject(getName())
+                        .valid(false)
+                        .explanation("Controller Service is not valid: " + (invalidResults.size() > 1 ? invalidResults : invalidResults.get(0)))
+                        .build();
                 }
 
                 return new ValidationResult.Builder()
@@ -197,6 +205,28 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
         return lastResult;
     }
 
+    /**
+     * Will validate if the dependent service (service identified with the
+     * 'serviceId') is 'enableable' which means that the dependent service is
+     * either in ENABLING or ENABLED state. The important issue here is to
+     * understand the order in which states are assigned:
+     *
+     * - Upon the initialization of the service its state is set to ENABLING.
+     *
+     * - Transition to ENABLED will happen asynchronously.
+     *
+     * So we check first for ENABLING state and if it succeeds we skip the check
+     * for ENABLED state even though by the time this method returns the
+     * dependent service's state could be fully ENABLED.
+     */
+    private boolean isDependentServiceEnableable(final ValidationContext context, final String serviceId) {
+        boolean enableable = context.getControllerServiceLookup().isControllerServiceEnabling(serviceId);
+        if (!enableable) {
+            enableable = context.getControllerServiceLookup().isControllerServiceEnabled(serviceId);
+        }
+        return enableable;
+    }
+
     public static final class Builder {
 
         private String displayName = null;
@@ -208,6 +238,7 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
         private boolean sensitive = false;
         private boolean expressionLanguageSupported = false;
         private boolean dynamic = false;
+        private boolean dynamicallyModifiesClasspath = false;
         private Class<? extends ControllerService> controllerServiceDefinition;
         private List<Validator> validators = new ArrayList<>();
 
@@ -220,6 +251,7 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
             this.required = specDescriptor.required;
             this.sensitive = specDescriptor.sensitive;
             this.dynamic = specDescriptor.dynamic;
+            this.dynamicallyModifiesClasspath = specDescriptor.dynamicallyModifiesClasspath;
             this.expressionLanguageSupported = specDescriptor.expressionLanguageSupported;
             this.controllerServiceDefinition = specDescriptor.getControllerServiceDefinition();
             this.validators = new ArrayList<>(specDescriptor.validators);
@@ -304,6 +336,22 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
 
         public Builder dynamic(final boolean dynamic) {
             this.dynamic = dynamic;
+            return this;
+        }
+
+        /**
+         * Specifies that the value of this property represents one or more resources that the
+         * framework should add to the classpath of the given component.
+         *
+         * NOTE: If a component contains a PropertyDescriptor where dynamicallyModifiesClasspath is set to true,
+         *  the component must also be annotated with @RequiresInstanceClassloading, otherwise the component will be
+         *  considered invalid.
+         *
+         * @param dynamicallyModifiesClasspath whether or not this property should be used by the framework to modify the classpath
+         * @return the builder
+         */
+        public Builder dynamicallyModifiesClasspath(final boolean dynamicallyModifiesClasspath) {
+            this.dynamicallyModifiesClasspath = dynamicallyModifiesClasspath;
             return this;
         }
 
@@ -468,6 +516,10 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
         return expressionLanguageSupported;
     }
 
+    public boolean isDynamicClasspathModifier() {
+        return dynamicallyModifiesClasspath;
+    }
+
     public Class<? extends ControllerService> getControllerServiceDefinition() {
         return controllerServiceDefinition;
     }
@@ -492,7 +544,7 @@ public final class PropertyDescriptor implements Comparable<PropertyDescriptor> 
             return true;
         }
 
-        PropertyDescriptor desc = (PropertyDescriptor) other;
+        final PropertyDescriptor desc = (PropertyDescriptor) other;
         return this.name.equals(desc.name);
     }
 

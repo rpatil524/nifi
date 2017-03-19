@@ -18,7 +18,6 @@ package org.apache.nifi.processors.standard;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -29,33 +28,26 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Properties;
+import java.util.Map;
 import java.util.Set;
-import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
-
 import javax.net.ssl.SSLContext;
-
+import org.apache.commons.lang3.StringUtils;
 import org.apache.http.Header;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
-import org.apache.http.client.HttpClient;
+import org.apache.http.client.config.CookieSpecs;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.config.Registry;
@@ -64,23 +56,35 @@ import org.apache.http.conn.HttpClientConnectionManager;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.conn.ssl.SSLContexts;
 import org.apache.http.conn.ssl.TrustSelfSignedStrategy;
 import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
+import org.apache.http.ssl.SSLContextBuilder;
+import org.apache.nifi.annotation.behavior.DynamicProperties;
+import org.apache.nifi.annotation.behavior.DynamicProperty;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.Stateful;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.lifecycle.OnRemoved;
-import org.apache.nifi.annotation.lifecycle.OnStopped;
+import org.apache.nifi.annotation.lifecycle.OnScheduled;
+import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.components.Validator;
+import org.apache.nifi.components.state.Scope;
+import org.apache.nifi.components.state.StateManager;
+import org.apache.nifi.components.state.StateMap;
+import org.apache.nifi.expression.AttributeExpression;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractSessionFactoryProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -88,17 +92,30 @@ import org.apache.nifi.processor.ProcessSessionFactory;
 import org.apache.nifi.processor.ProcessorInitializationContext;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.security.util.KeyStoreUtils;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.ssl.SSLContextService;
 import org.apache.nifi.ssl.SSLContextService.ClientAuth;
 import org.apache.nifi.util.StopWatch;
+import org.apache.nifi.util.Tuple;
 
 @Tags({"get", "fetch", "poll", "http", "https", "ingest", "source", "input"})
-@CapabilityDescription("Fetches a file via HTTP")
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
+@CapabilityDescription("Fetches data from an HTTP or HTTPS URL and writes the data to the content of a FlowFile. Once the content has been fetched, the ETag and Last Modified "
+    + "dates are remembered (if the web server supports these concepts). This allows the Processor to fetch new data only if the remote data has changed or until the state is cleared. That is, "
+    + "once the content has been fetched from the given URL, it will not be fetched again until the content on the remote server changes. Note that due to limitations on state "
+    + "management, stored \"last modified\" and etag fields never expire. If the URL in GetHttp uses Expression Language that is unbounded, there "
+    + "is the potential for Out of Memory Errors to occur.")
+@DynamicProperties({
+    @DynamicProperty(name = "Header Name", value = "The Expression Language to be used to populate the header value", description = "The additional headers to be sent by the processor " +
+            "whenever making a new HTTP request. \n " +
+            "Setting a dynamic property name to XYZ and value to ${attribute} will result in the header 'XYZ: attribute_value' being sent to the HTTP endpoint"),
+})
 @WritesAttributes({
     @WritesAttribute(attribute = "filename", description = "The filename is set to the name of the file on the remote server"),
     @WritesAttribute(attribute = "mime.type", description = "The MIME Type of the FlowFile, as reported by the HTTP Content-Type header")
 })
+@Stateful(scopes = {Scope.LOCAL}, description = "Stores Last Modified Time and ETag headers returned by server so that the same data will not be fetched multiple times.")
 public class GetHTTP extends AbstractSessionFactoryProcessor {
 
     static final int PERSISTENCE_INTERVAL_MSEC = 10000;
@@ -114,6 +131,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
             .name("URL")
             .description("The URL to pull from")
             .required(true)
+            .expressionLanguageSupported(true)
             .addValidator(StandardValidators.URL_VALIDATOR)
             .addValidator(StandardValidators.createRegexMatchingValidator(Pattern.compile("https?\\://.*")))
             .build();
@@ -146,7 +164,8 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
     public static final PropertyDescriptor FILENAME = new PropertyDescriptor.Builder()
             .name("Filename")
             .description("The filename to assign to the file when pulled")
-            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .expressionLanguageSupported(true)
+            .addValidator(StandardValidators.createAttributeExpressionLanguageValidator(AttributeExpression.ResultType.STRING))
             .required(true)
             .build();
     public static final PropertyDescriptor USERNAME = new PropertyDescriptor.Builder()
@@ -187,6 +206,30 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
             .addValidator(StandardValidators.PORT_VALIDATOR)
             .build();
 
+    public static final String DEFAULT_COOKIE_POLICY_STR = "default";
+    public static final String STANDARD_COOKIE_POLICY_STR = "standard";
+    public static final String STRICT_COOKIE_POLICY_STR = "strict";
+    public static final String NETSCAPE_COOKIE_POLICY_STR = "netscape";
+    public static final String IGNORE_COOKIE_POLICY_STR = "ignore";
+    public static final AllowableValue DEFAULT_COOKIE_POLICY = new AllowableValue(DEFAULT_COOKIE_POLICY_STR, DEFAULT_COOKIE_POLICY_STR,
+            "Default cookie policy that provides a higher degree of compatibility with common cookie management of popular HTTP agents for non-standard (Netscape style) cookies.");
+    public static final AllowableValue STANDARD_COOKIE_POLICY = new AllowableValue(STANDARD_COOKIE_POLICY_STR, STANDARD_COOKIE_POLICY_STR,
+            "RFC 6265 compliant cookie policy (interoperability profile).");
+    public static final AllowableValue STRICT_COOKIE_POLICY = new AllowableValue(STRICT_COOKIE_POLICY_STR, STRICT_COOKIE_POLICY_STR,
+            "RFC 6265 compliant cookie policy (strict profile).");
+    public static final AllowableValue NETSCAPE_COOKIE_POLICY = new AllowableValue(NETSCAPE_COOKIE_POLICY_STR, NETSCAPE_COOKIE_POLICY_STR,
+            "Netscape draft compliant cookie policy.");
+    public static final AllowableValue IGNORE_COOKIE_POLICY = new AllowableValue(IGNORE_COOKIE_POLICY_STR, IGNORE_COOKIE_POLICY_STR,
+            "A cookie policy that ignores cookies.");
+
+    public static final PropertyDescriptor REDIRECT_COOKIE_POLICY = new PropertyDescriptor.Builder()
+            .name("redirect-cookie-policy")
+            .displayName("Redirect Cookie Policy")
+            .description("When a HTTP server responds to a request with a redirect, this is the cookie policy used to copy cookies to the following request.")
+            .allowableValues(DEFAULT_COOKIE_POLICY, STANDARD_COOKIE_POLICY, STRICT_COOKIE_POLICY, NETSCAPE_COOKIE_POLICY, IGNORE_COOKIE_POLICY)
+            .defaultValue(DEFAULT_COOKIE_POLICY_STR)
+            .build();
+
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
             .name("success")
             .description("All files are transferred to the success relationship")
@@ -195,30 +238,15 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
     public static final String LAST_MODIFIED_DATE_PATTERN_RFC1123 = "EEE, dd MMM yyyy HH:mm:ss zzz";
 
     // package access to enable unit testing
-    static final String UNINITIALIZED_LAST_MODIFIED_VALUE;
-
-    private static final String HTTP_CACHE_FILE_PREFIX = "conf/.httpCache-";
-
     static final String ETAG = "ETag";
-
     static final String LAST_MODIFIED = "LastModified";
 
-    static {
-        final SimpleDateFormat sdf = new SimpleDateFormat(LAST_MODIFIED_DATE_PATTERN_RFC1123, Locale.US);
-        sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
-        UNINITIALIZED_LAST_MODIFIED_VALUE = sdf.format(new Date(1L));
-    }
-    final AtomicReference<String> lastModifiedRef = new AtomicReference<>(UNINITIALIZED_LAST_MODIFIED_VALUE);
-    final AtomicReference<String> entityTagRef = new AtomicReference<>("");
-    // end
 
     private Set<Relationship> relationships;
     private List<PropertyDescriptor> properties;
+    private volatile List<PropertyDescriptor> customHeaders = new ArrayList<>();
 
-    private volatile long timeToPersist = 0;
-    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final ReadLock readLock = lock.readLock();
-    private final WriteLock writeLock = lock.writeLock();
+    private final AtomicBoolean clearState = new AtomicBoolean(false);
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
@@ -237,19 +265,10 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
         properties.add(USER_AGENT);
         properties.add(ACCEPT_CONTENT_TYPE);
         properties.add(FOLLOW_REDIRECTS);
+        properties.add(REDIRECT_COOKIE_POLICY);
         properties.add(PROXY_HOST);
         properties.add(PROXY_PORT);
         this.properties = Collections.unmodifiableList(properties);
-
-        // load etag and lastModified from file
-        final File httpCache = new File(HTTP_CACHE_FILE_PREFIX + getIdentifier());
-        try (FileInputStream fis = new FileInputStream(httpCache)) {
-            final Properties props = new Properties();
-            props.load(fis);
-            entityTagRef.set(props.getProperty(ETAG));
-            lastModifiedRef.set(props.getProperty(LAST_MODIFIED));
-        } catch (final IOException swallow) {
-        }
     }
 
     @Override
@@ -264,28 +283,21 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
 
     @Override
     public void onPropertyModified(final PropertyDescriptor descriptor, final String oldValue, final String newValue) {
-        entityTagRef.set("");
-        lastModifiedRef.set(UNINITIALIZED_LAST_MODIFIED_VALUE);
+        clearState.set(true);
     }
 
-    @OnStopped
-    public void onStopped() {
-        final File httpCache = new File(HTTP_CACHE_FILE_PREFIX + getIdentifier());
-        try (FileOutputStream fos = new FileOutputStream(httpCache)) {
-            final Properties props = new Properties();
-            props.setProperty(ETAG, entityTagRef.get());
-            props.setProperty(LAST_MODIFIED, lastModifiedRef.get());
-            props.store(fos, "GetHTTP file modification values");
-        } catch (final IOException swallow) {
+    @OnScheduled
+    public void onScheduled(final ProcessContext context) throws IOException {
+        if (clearState.getAndSet(false)) {
+            context.getStateManager().clear(Scope.LOCAL);
         }
-
-    }
-
-    @OnRemoved
-    public void onRemoved() {
-        final File httpCache = new File(HTTP_CACHE_FILE_PREFIX + getIdentifier());
-        if (httpCache.exists()) {
-            httpCache.delete();
+        if (customHeaders.size() == 0) {
+            for (Map.Entry<PropertyDescriptor, String> property : context.getProperties().entrySet()) {
+                // only add the custom defined Headers (i.e. dynamic properties)
+                if (!getSupportedPropertyDescriptors().contains(property.getKey())) {
+                    customHeaders.add(property.getKey());
+                }
+            }
         }
     }
 
@@ -293,7 +305,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
     protected Collection<ValidationResult> customValidate(final ValidationContext context) {
         final Collection<ValidationResult> results = new ArrayList<>();
 
-        if (context.getProperty(URL).getValue().startsWith("https") && context.getProperty(SSL_CONTEXT_SERVICE).getValue() == null) {
+        if (context.getProperty(URL).evaluateAttributeExpressions().getValue().startsWith("https") && context.getProperty(SSL_CONTEXT_SERVICE).getValue() == null) {
             results.add(new ValidationResult.Builder()
                     .explanation("URL is set to HTTPS protocol but no SSLContext has been specified")
                     .valid(false)
@@ -312,26 +324,46 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
         return results;
     }
 
+    @Override
+    protected PropertyDescriptor getSupportedDynamicPropertyDescriptor(final String propertyDescriptorName) {
+        return new PropertyDescriptor.Builder()
+                .name(propertyDescriptorName)
+                .expressionLanguageSupported(true)
+                .addValidator(Validator.VALID)
+                .required(false)
+                .dynamic(true)
+                .build();
+    }
+
     private SSLContext createSSLContext(final SSLContextService service)
             throws KeyStoreException, IOException, NoSuchAlgorithmException, CertificateException, KeyManagementException, UnrecoverableKeyException {
-        final KeyStore truststore = KeyStore.getInstance(service.getTrustStoreType());
-        try (final InputStream in = new FileInputStream(new File(service.getTrustStoreFile()))) {
-            truststore.load(in, service.getTrustStorePassword().toCharArray());
+
+        final SSLContextBuilder sslContextBuilder = new SSLContextBuilder();
+
+        if (StringUtils.isNotBlank(service.getTrustStoreFile())) {
+            final KeyStore truststore = KeyStoreUtils.getTrustStore(service.getTrustStoreType());
+            try (final InputStream in = new FileInputStream(new File(service.getTrustStoreFile()))) {
+                truststore.load(in, service.getTrustStorePassword().toCharArray());
+            }
+            sslContextBuilder.loadTrustMaterial(truststore, new TrustSelfSignedStrategy());
         }
 
-        final KeyStore keystore = KeyStore.getInstance(service.getKeyStoreType());
-        try (final InputStream in = new FileInputStream(new File(service.getKeyStoreFile()))) {
-            keystore.load(in, service.getKeyStorePassword().toCharArray());
+        if (StringUtils.isNotBlank(service.getKeyStoreFile())){
+            final KeyStore keystore = KeyStoreUtils.getKeyStore(service.getKeyStoreType());
+            try (final InputStream in = new FileInputStream(new File(service.getKeyStoreFile()))) {
+                keystore.load(in, service.getKeyStorePassword().toCharArray());
+            }
+            sslContextBuilder.loadKeyMaterial(keystore, service.getKeyStorePassword().toCharArray());
         }
 
-        final SSLContext sslContext = SSLContexts.custom().loadTrustMaterial(truststore, new TrustSelfSignedStrategy()).loadKeyMaterial(keystore, service.getKeyStorePassword().toCharArray()).build();
+        sslContextBuilder.useProtocol(service.getSslAlgorithm());
 
-        return sslContext;
+        return sslContextBuilder.build();
     }
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSessionFactory sessionFactory) throws ProcessException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         final ProcessSession session = sessionFactory.createSession();
         final FlowFile incomingFlowFile = session.get();
@@ -341,7 +373,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
         }
 
         // get the URL
-        final String url = context.getProperty(URL).getValue();
+        final String url = context.getProperty(URL).evaluateAttributeExpressions().getValue();
         final URI uri;
         String source = url;
         try {
@@ -366,7 +398,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
                 throw new ProcessException(e);
             }
 
-            final SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(sslContext, new String[]{"TLSv1"}, null, SSLConnectionSocketFactory.BROWSER_COMPATIBLE_HOSTNAME_VERIFIER);
+            final SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(sslContext);
 
             // Also include a plain socket factory for regular http connections (especially proxies)
             final Registry<ConnectionSocketFactory> socketFactoryRegistry =
@@ -383,9 +415,25 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
             final RequestConfig.Builder requestConfigBuilder = RequestConfig.custom();
             requestConfigBuilder.setConnectionRequestTimeout(context.getProperty(DATA_TIMEOUT).asTimePeriod(TimeUnit.MILLISECONDS).intValue());
             requestConfigBuilder.setConnectTimeout(context.getProperty(CONNECTION_TIMEOUT).asTimePeriod(TimeUnit.MILLISECONDS).intValue());
-            requestConfigBuilder.setRedirectsEnabled(false);
             requestConfigBuilder.setSocketTimeout(context.getProperty(DATA_TIMEOUT).asTimePeriod(TimeUnit.MILLISECONDS).intValue());
             requestConfigBuilder.setRedirectsEnabled(context.getProperty(FOLLOW_REDIRECTS).asBoolean());
+            switch (context.getProperty(REDIRECT_COOKIE_POLICY).getValue()) {
+            case STANDARD_COOKIE_POLICY_STR:
+                requestConfigBuilder.setCookieSpec(CookieSpecs.STANDARD);
+                break;
+            case STRICT_COOKIE_POLICY_STR:
+                requestConfigBuilder.setCookieSpec(CookieSpecs.STANDARD_STRICT);
+                break;
+            case NETSCAPE_COOKIE_POLICY_STR:
+                requestConfigBuilder.setCookieSpec(CookieSpecs.NETSCAPE);
+                break;
+            case IGNORE_COOKIE_POLICY_STR:
+                requestConfigBuilder.setCookieSpec(CookieSpecs.IGNORE_COOKIES);
+                break;
+            case DEFAULT_COOKIE_POLICY_STR:
+            default:
+                requestConfigBuilder.setCookieSpec(CookieSpecs.DEFAULT);
+            }
 
             // build the http client
             final HttpClientBuilder clientBuilder = HttpClientBuilder.create();
@@ -423,111 +471,171 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
                 clientBuilder.setProxy(new HttpHost(host, port));
             }
 
-            // create the http client
-            final HttpClient client = clientBuilder.build();
-
             // create request
             final HttpGet get = new HttpGet(url);
             get.setConfig(requestConfigBuilder.build());
 
-            get.addHeader(HEADER_IF_MODIFIED_SINCE, lastModifiedRef.get());
-            get.addHeader(HEADER_IF_NONE_MATCH, entityTagRef.get());
+            final StateMap beforeStateMap;
+
+            try {
+                beforeStateMap = context.getStateManager().getState(Scope.LOCAL);
+                final String lastModified = beforeStateMap.get(LAST_MODIFIED+":" + url);
+                if (lastModified != null) {
+                    get.addHeader(HEADER_IF_MODIFIED_SINCE, parseStateValue(lastModified).getValue());
+                }
+
+                final String etag = beforeStateMap.get(ETAG+":" + url);
+                if (etag != null) {
+                    get.addHeader(HEADER_IF_NONE_MATCH, parseStateValue(etag).getValue());
+                }
+            } catch (final IOException ioe) {
+                throw new ProcessException(ioe);
+            }
 
             final String accept = context.getProperty(ACCEPT_CONTENT_TYPE).getValue();
             if (accept != null) {
                 get.addHeader(HEADER_ACCEPT, accept);
             }
 
-            try {
-                final StopWatch stopWatch = new StopWatch(true);
-                final HttpResponse response = client.execute(get);
-                final int statusCode = response.getStatusLine().getStatusCode();
-                if (statusCode == NOT_MODIFIED) {
-                    logger.info("content not retrieved because server returned HTTP Status Code {}: Not Modified", new Object[]{NOT_MODIFIED});
-                    context.yield();
-                    // doing a commit in case there were flow files in the input queue
-                    session.commit();
-                    return;
-                }
-                final String statusExplanation = response.getStatusLine().getReasonPhrase();
+            // Add dynamic headers
 
-                if (statusCode >= 300) {
-                    logger.error("received status code {}:{} from {}", new Object[]{statusCode, statusExplanation, url});
-                    // doing a commit in case there were flow files in the input queue
-                    session.commit();
-                    return;
+            PropertyValue customHeaderValue;
+            for (PropertyDescriptor customProperty : customHeaders) {
+                customHeaderValue = context.getProperty(customProperty).evaluateAttributeExpressions();
+                if (StringUtils.isNotBlank(customHeaderValue.getValue())) {
+                    get.addHeader(customProperty.getName(), customHeaderValue.getValue());
                 }
-
-                FlowFile flowFile = session.create();
-                flowFile = session.putAttribute(flowFile, CoreAttributes.FILENAME.key(), context.getProperty(FILENAME).getValue());
-                flowFile = session.putAttribute(flowFile, this.getClass().getSimpleName().toLowerCase() + ".remote.source", source);
-                flowFile = session.importFrom(response.getEntity().getContent(), flowFile);
-
-                final Header contentTypeHeader = response.getFirstHeader("Content-Type");
-                if (contentTypeHeader != null) {
-                    final String contentType = contentTypeHeader.getValue();
-                    if (!contentType.trim().isEmpty()) {
-                        flowFile = session.putAttribute(flowFile, CoreAttributes.MIME_TYPE.key(), contentType.trim());
-                    }
-                }
-
-                final long flowFileSize = flowFile.getSize();
-                stopWatch.stop();
-                final String dataRate = stopWatch.calculateDataRate(flowFileSize);
-                session.getProvenanceReporter().receive(flowFile, url, stopWatch.getDuration(TimeUnit.MILLISECONDS));
-                session.transfer(flowFile, REL_SUCCESS);
-                logger.info("Successfully received {} from {} at a rate of {}; transferred to success", new Object[]{flowFile, url, dataRate});
-                session.commit();
-                final Header lastModified = response.getFirstHeader(HEADER_LAST_MODIFIED);
-                if (lastModified != null) {
-                    lastModifiedRef.set(lastModified.getValue());
-                }
-
-                final Header etag = response.getFirstHeader(HEADER_ETAG);
-                if (etag != null) {
-                    entityTagRef.set(etag.getValue());
-                }
-                if ((etag != null || lastModified != null) && readLock.tryLock()) {
-                    try {
-                        if (timeToPersist < System.currentTimeMillis()) {
-                            readLock.unlock();
-                            writeLock.lock();
-                            try {
-                                if (timeToPersist < System.currentTimeMillis()) {
-                                    timeToPersist = System.currentTimeMillis() + PERSISTENCE_INTERVAL_MSEC;
-                                    final File httpCache = new File(HTTP_CACHE_FILE_PREFIX + getIdentifier());
-                                    try (FileOutputStream fos = new FileOutputStream(httpCache)) {
-                                        final Properties props = new Properties();
-                                        props.setProperty(ETAG, entityTagRef.get());
-                                        props.setProperty(LAST_MODIFIED, lastModifiedRef.get());
-                                        props.store(fos, "GetHTTP file modification values");
-                                    } catch (final IOException e) {
-                                        getLogger().error("Failed to persist ETag and LastMod due to " + e, e);
-                                    }
-                                }
-                            } finally {
-                                readLock.lock();
-                                writeLock.unlock();
-                            }
-                        }
-                    } finally {
-                        readLock.unlock();
-                    }
-                }
-            } catch (final IOException e) {
-                context.yield();
-                session.rollback();
-                logger.error("Failed to retrieve file from {} due to {}; rolling back session", new Object[]{url, e.getMessage()}, e);
-                throw new ProcessException(e);
-            } catch (final Throwable t) {
-                context.yield();
-                session.rollback();
-                logger.error("Failed to process due to {}; rolling back session", new Object[]{t.getMessage()}, t);
-                throw t;
             }
 
+
+            // create the http client
+            try ( final CloseableHttpClient client = clientBuilder.build() ) {
+                // NOTE: including this inner try in order to swallow exceptions on close
+                try {
+                    final StopWatch stopWatch = new StopWatch(true);
+                    final HttpResponse response = client.execute(get);
+                    final int statusCode = response.getStatusLine().getStatusCode();
+                    if (statusCode == NOT_MODIFIED) {
+                        logger.info("content not retrieved because server returned HTTP Status Code {}: Not Modified", new Object[]{NOT_MODIFIED});
+                        context.yield();
+                        // doing a commit in case there were flow files in the input queue
+                        session.commit();
+                        return;
+                    }
+                    final String statusExplanation = response.getStatusLine().getReasonPhrase();
+
+                    if ((statusCode >= 300) || (statusCode == 204)) {
+                        logger.error("received status code {}:{} from {}", new Object[]{statusCode, statusExplanation, url});
+                        // doing a commit in case there were flow files in the input queue
+                        session.commit();
+                        return;
+                    }
+
+                    FlowFile flowFile = session.create();
+                    flowFile = session.putAttribute(flowFile, CoreAttributes.FILENAME.key(), context.getProperty(FILENAME).evaluateAttributeExpressions().getValue());
+                    flowFile = session.putAttribute(flowFile, this.getClass().getSimpleName().toLowerCase() + ".remote.source", source);
+                    flowFile = session.importFrom(response.getEntity().getContent(), flowFile);
+
+                    final Header contentTypeHeader = response.getFirstHeader("Content-Type");
+                    if (contentTypeHeader != null) {
+                        final String contentType = contentTypeHeader.getValue();
+                        if (!contentType.trim().isEmpty()) {
+                            flowFile = session.putAttribute(flowFile, CoreAttributes.MIME_TYPE.key(), contentType.trim());
+                        }
+                    }
+
+                    final long flowFileSize = flowFile.getSize();
+                    stopWatch.stop();
+                    final String dataRate = stopWatch.calculateDataRate(flowFileSize);
+                    session.getProvenanceReporter().receive(flowFile, url, stopWatch.getDuration(TimeUnit.MILLISECONDS));
+                    session.transfer(flowFile, REL_SUCCESS);
+                    logger.info("Successfully received {} from {} at a rate of {}; transferred to success", new Object[]{flowFile, url, dataRate});
+                    session.commit();
+
+                    updateStateMap(context,response,beforeStateMap,url);
+
+                } catch (final IOException e) {
+                    context.yield();
+                    session.rollback();
+                    logger.error("Failed to retrieve file from {} due to {}; rolling back session", new Object[]{url, e.getMessage()}, e);
+                    throw new ProcessException(e);
+                } catch (final Throwable t) {
+                    context.yield();
+                    session.rollback();
+                    logger.error("Failed to process due to {}; rolling back session", new Object[]{t.getMessage()}, t);
+                    throw t;
+                }
+            } catch (final IOException e) {
+                logger.debug("Error closing client due to {}, continuing.", new Object[]{e.getMessage()});
+            }
         } finally {
             conMan.shutdown();
         }
+    }
+
+    private void updateStateMap(ProcessContext context, HttpResponse response, StateMap beforeStateMap, String url){
+        try {
+            Map<String,String> workingMap = new HashMap<>();
+            workingMap.putAll(beforeStateMap.toMap());
+            final StateManager stateManager = context.getStateManager();
+            StateMap oldValue = beforeStateMap;
+
+            long currentTime = System.currentTimeMillis();
+
+            final Header receivedLastModified = response.getFirstHeader(HEADER_LAST_MODIFIED);
+            if (receivedLastModified != null) {
+                workingMap.put(LAST_MODIFIED + ":" + url, currentTime+":"+receivedLastModified.getValue());
+            }
+
+            final Header receivedEtag = response.getFirstHeader(HEADER_ETAG);
+            if (receivedEtag != null) {
+                workingMap.put(ETAG + ":" + url, currentTime+":"+receivedEtag.getValue());
+            }
+
+            boolean replaceSucceeded = stateManager.replace(oldValue, workingMap, Scope.LOCAL);
+            boolean changed;
+
+            while(!replaceSucceeded){
+                oldValue = stateManager.getState(Scope.LOCAL);
+                workingMap.clear();
+                workingMap.putAll(oldValue.toMap());
+
+                changed = false;
+
+                if(receivedLastModified != null){
+                    Tuple<String,String> storedLastModifiedTuple = parseStateValue(workingMap.get(LAST_MODIFIED+":"+url));
+
+                    if(Long.parseLong(storedLastModifiedTuple.getKey()) < currentTime){
+                        workingMap.put(LAST_MODIFIED + ":" + url, currentTime+":"+receivedLastModified.getValue());
+                        changed = true;
+                    }
+                }
+
+                if(receivedEtag != null){
+                    Tuple<String,String> storedLastModifiedTuple = parseStateValue(workingMap.get(ETAG+":"+url));
+
+                    if(Long.parseLong(storedLastModifiedTuple.getKey()) < currentTime){
+                        workingMap.put(ETAG + ":" + url, currentTime+":"+receivedEtag.getValue());
+                        changed = true;
+                    }
+                }
+
+                if(changed) {
+                    replaceSucceeded = stateManager.replace(oldValue, workingMap, Scope.LOCAL);
+                } else {
+                    break;
+                }
+            }
+        } catch (final IOException ioe) {
+            throw new ProcessException(ioe);
+        }
+    }
+
+    protected static Tuple<String, String> parseStateValue(String mapValue){
+        int indexOfColon = mapValue.indexOf(":");
+
+        String timestamp = mapValue.substring(0,indexOfColon);
+        String value = mapValue.substring(indexOfColon+1);
+        return new Tuple<>(timestamp,value);
     }
 }

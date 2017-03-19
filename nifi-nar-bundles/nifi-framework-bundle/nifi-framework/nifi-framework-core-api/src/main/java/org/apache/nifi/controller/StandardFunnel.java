@@ -16,22 +16,12 @@
  */
 package org.apache.nifi.controller;
 
-import static java.util.Objects.requireNonNull;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
+import org.apache.commons.lang3.builder.ToStringBuilder;
+import org.apache.commons.lang3.builder.ToStringStyle;
+import org.apache.nifi.authorization.Resource;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.resource.ResourceFactory;
+import org.apache.nifi.authorization.resource.ResourceType;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.ConnectableType;
@@ -48,8 +38,21 @@ import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.util.FormatUtils;
 
-import org.apache.commons.lang3.builder.ToStringBuilder;
-import org.apache.commons.lang3.builder.ToStringStyle;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import static java.util.Objects.requireNonNull;
 
 public class StandardFunnel implements Funnel {
 
@@ -97,13 +100,19 @@ public class StandardFunnel implements Funnel {
         yieldPeriod = new AtomicReference<>("250 millis");
         yieldExpiration = new AtomicLong(0L);
         schedulingPeriod = new AtomicReference<>("0 millis");
-        schedulingNanos = new AtomicLong(30000);
+        schedulingNanos = new AtomicLong(MINIMUM_SCHEDULING_NANOS);
         name = new AtomicReference<>("Funnel");
     }
 
     @Override
     public String getIdentifier() {
         return identifier;
+    }
+
+    @Override
+    public String getProcessGroupIdentifier() {
+        final ProcessGroup procGroup = getProcessGroup();
+        return procGroup == null ? null : procGroup.getIdentifier();
     }
 
     @Override
@@ -114,6 +123,16 @@ public class StandardFunnel implements Funnel {
     @Override
     public Relationship getRelationship(final String relationshipName) {
         return (Relationship.ANONYMOUS.getName().equals(relationshipName)) ? Relationship.ANONYMOUS : null;
+    }
+
+    @Override
+    public Authorizable getParentAuthorizable() {
+        return getProcessGroup();
+    }
+
+    @Override
+    public Resource getResource() {
+        return ResourceFactory.getComponentResource(ResourceType.Funnel, getIdentifier(), getName());
     }
 
     @Override
@@ -204,7 +223,7 @@ public class StandardFunnel implements Funnel {
 
             final boolean removed = outgoingConnections.remove(connection);
             if (!removed) {
-                throw new IllegalStateException(connection + " is not registered with " + this);
+                throw new IllegalStateException(connection.getIdentifier() + " is not registered with " + this.getIdentifier());
             }
         } finally {
             writeLock.unlock();
@@ -349,21 +368,15 @@ public class StandardFunnel implements Funnel {
         readLock.lock();
         try {
             Set<Relationship> available = context.getAvailableRelationships();
-            int transferred = 0;
             while (!available.isEmpty()) {
-                final List<FlowFile> flowFiles = session.get(10);
+                final List<FlowFile> flowFiles = session.get(100);
                 if (flowFiles.isEmpty()) {
                     break;
                 }
 
-                transferred += flowFiles.size();
                 session.transfer(flowFiles, Relationship.ANONYMOUS);
                 session.commit();
                 available = context.getAvailableRelationships();
-            }
-
-            if (transferred == 0) {
-                context.yield();
             }
         } finally {
             readLock.unlock();
@@ -498,7 +511,7 @@ public class StandardFunnel implements Funnel {
                 if (connection.getSource().equals(this)) {
                     connection.verifyCanDelete();
                 } else {
-                    throw new IllegalStateException(this + " is the destination of another component");
+                    throw new IllegalStateException("Funnel " + this.getIdentifier() + " is the destination of another component");
                 }
             }
         } finally {
@@ -532,7 +545,16 @@ public class StandardFunnel implements Funnel {
     }
 
     @Override
+    public void verifyCanClearState() {
+    }
+
+    @Override
     public SchedulingStrategy getSchedulingStrategy() {
         return SchedulingStrategy.TIMER_DRIVEN;
+    }
+
+    @Override
+    public String getComponentType() {
+        return "Funnel";
     }
 }

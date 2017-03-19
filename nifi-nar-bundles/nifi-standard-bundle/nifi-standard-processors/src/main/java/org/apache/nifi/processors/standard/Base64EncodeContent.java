@@ -29,13 +29,15 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.codec.binary.Base64InputStream;
 import org.apache.commons.codec.binary.Base64OutputStream;
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -51,26 +53,27 @@ import org.apache.nifi.util.StopWatch;
 @SupportsBatching
 @Tags({"encode", "base64"})
 @CapabilityDescription("Encodes or decodes content to and from base64")
+@InputRequirement(Requirement.INPUT_REQUIRED)
 public class Base64EncodeContent extends AbstractProcessor {
 
     public static final String ENCODE_MODE = "Encode";
     public static final String DECODE_MODE = "Decode";
 
     public static final PropertyDescriptor MODE = new PropertyDescriptor.Builder()
-            .name("Mode")
-            .description("Specifies whether the content should be encoded or decoded")
-            .required(true)
-            .allowableValues(ENCODE_MODE, DECODE_MODE)
-            .defaultValue(ENCODE_MODE)
-            .build();
+        .name("Mode")
+        .description("Specifies whether the content should be encoded or decoded")
+        .required(true)
+        .allowableValues(ENCODE_MODE, DECODE_MODE)
+        .defaultValue(ENCODE_MODE)
+        .build();
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
-            .name("success")
-            .description("Any FlowFile that is successfully encoded or decoded will be routed to success")
-            .build();
+        .name("success")
+        .description("Any FlowFile that is successfully encoded or decoded will be routed to success")
+        .build();
     public static final Relationship REL_FAILURE = new Relationship.Builder()
-            .name("failure")
-            .description("Any FlowFile that cannot be encoded or decoded will be routed to failure")
-            .build();
+        .name("failure")
+        .description("Any FlowFile that cannot be encoded or decoded will be routed to failure")
+        .build();
 
     private List<PropertyDescriptor> properties;
     private Set<Relationship> relationships;
@@ -104,7 +107,7 @@ public class Base64EncodeContent extends AbstractProcessor {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         boolean encode = context.getProperty(MODE).getValue().equalsIgnoreCase(ENCODE_MODE);
         try {
@@ -139,11 +142,11 @@ public class Base64EncodeContent extends AbstractProcessor {
                 });
             }
 
-            logger.info("Successfully {} {}", new Object[]{encode ? "encoded" : "decoded", flowFile});
+            logger.info("Successfully {} {}", new Object[] {encode ? "encoded" : "decoded", flowFile});
             session.getProvenanceReporter().modifyContent(flowFile, stopWatch.getElapsed(TimeUnit.MILLISECONDS));
             session.transfer(flowFile, REL_SUCCESS);
         } catch (ProcessException e) {
-            logger.error("Failed to {} {} due to {}", new Object[]{encode ? "encode" : "decode", flowFile, e});
+            logger.error("Failed to {} {} due to {}", new Object[] {encode ? "encode" : "decode", flowFile, e});
             session.transfer(flowFile, REL_FAILURE);
         }
     }

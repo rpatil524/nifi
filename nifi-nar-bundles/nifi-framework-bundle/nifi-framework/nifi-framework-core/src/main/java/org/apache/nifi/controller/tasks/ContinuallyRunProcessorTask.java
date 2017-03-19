@@ -21,7 +21,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.nifi.annotation.lifecycle.OnStopped;
 import org.apache.nifi.controller.FlowController;
 import org.apache.nifi.controller.ProcessorNode;
 import org.apache.nifi.controller.repository.BatchingSessionFactory;
@@ -32,14 +31,13 @@ import org.apache.nifi.controller.repository.StandardProcessSessionFactory;
 import org.apache.nifi.controller.scheduling.ProcessContextFactory;
 import org.apache.nifi.controller.scheduling.ScheduleState;
 import org.apache.nifi.controller.scheduling.SchedulingAgent;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.processor.ProcessSessionFactory;
 import org.apache.nifi.processor.SimpleProcessLogger;
 import org.apache.nifi.processor.StandardProcessContext;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.util.Connectables;
-import org.apache.nifi.util.ReflectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,30 +70,51 @@ public class ContinuallyRunProcessorTask implements Callable<Boolean> {
         this.processContext = processContext;
     }
 
+    static boolean isRunOnCluster(final ProcessorNode procNode, FlowController flowController) {
+        return !procNode.isIsolated() || !flowController.isConfiguredForClustering() || flowController.isPrimary();
+    }
+
+    static boolean isYielded(final ProcessorNode procNode) {
+        return procNode.getYieldExpiration() >= System.currentTimeMillis();
+    }
+
+    static boolean isWorkToDo(final ProcessorNode procNode) {
+        return procNode.isTriggerWhenEmpty() || !procNode.hasIncomingConnection() || !Connectables.hasNonLoopConnection(procNode) || Connectables.flowFilesQueued(procNode);
+    }
+
+    private boolean isBackPressureEngaged() {
+        return procNode.getIncomingConnections().stream()
+            .filter(con -> con.getSource() == procNode)
+            .map(con -> con.getFlowFileQueue())
+            .anyMatch(queue -> queue.isFull());
+    }
+
     @Override
-    @SuppressWarnings("deprecation")
     public Boolean call() {
         // make sure processor is not yielded
-        boolean shouldRun = (procNode.getYieldExpiration() < System.currentTimeMillis());
-        if (!shouldRun) {
+        if (isYielded(procNode)) {
             return false;
         }
 
         // make sure that either we're not clustered or this processor runs on all nodes or that this is the primary node
-        shouldRun = !procNode.isIsolated() || !flowController.isClustered() || flowController.isPrimary();
-        if (!shouldRun) {
+        if (!isRunOnCluster(procNode, flowController)) {
             return false;
         }
 
-        // make sure that either proc has incoming FlowFiles or has no incoming connections or is annotated with @TriggerWhenEmpty
-        shouldRun = procNode.isTriggerWhenEmpty() || !procNode.hasIncomingConnection() || Connectables.flowFilesQueued(procNode);
-        if (!shouldRun) {
+        // Make sure processor has work to do. This means that it meets one of these criteria:
+        // * It is annotated with @TriggerWhenEmpty
+        // * It has data in an incoming Connection
+        // * It has no incoming connections
+        // * All incoming connections are self-loops
+        if (!isWorkToDo(procNode)) {
             return true;
         }
 
         if (numRelationships > 0) {
             final int requiredNumberOfAvailableRelationships = procNode.isTriggerWhenAnyDestinationAvailable() ? 1 : numRelationships;
-            shouldRun = context.isRelationshipAvailabilitySatisfied(requiredNumberOfAvailableRelationships);
+            if (!context.isRelationshipAvailabilitySatisfied(requiredNumberOfAvailableRelationships)) {
+                return true;
+            }
         }
 
         final long batchNanos = procNode.getRunDuration(TimeUnit.NANOSECONDS);
@@ -112,17 +131,15 @@ public class ContinuallyRunProcessorTask implements Callable<Boolean> {
             batch = false;
         }
 
-        if (!shouldRun) {
-            return false;
-        }
-
         scheduleState.incrementActiveThreadCount();
 
         final long startNanos = System.nanoTime();
+        final long finishIfBackpressureEngaged = startNanos + (batchNanos / 25L);
         final long finishNanos = startNanos + batchNanos;
         int invocationCount = 0;
         try {
-            try (final AutoCloseable ncl = NarCloseable.withNarLoader()) {
+            try (final AutoCloseable ncl = NarCloseable.withComponentNarLoader(procNode.getProcessor().getClass(), procNode.getIdentifier())) {
+                boolean shouldRun = true;
                 while (shouldRun) {
                     procNode.onTrigger(processContext, sessionFactory);
                     invocationCount++;
@@ -131,24 +148,34 @@ public class ContinuallyRunProcessorTask implements Callable<Boolean> {
                         return false;
                     }
 
-                    if (System.nanoTime() > finishNanos) {
+                    final long nanoTime = System.nanoTime();
+                    if (nanoTime > finishNanos) {
                         return false;
                     }
 
-                    shouldRun = procNode.isTriggerWhenEmpty() || !procNode.hasIncomingConnection() || Connectables.flowFilesQueued(procNode);
-                    shouldRun = shouldRun && (procNode.getYieldExpiration() < System.currentTimeMillis());
+                    if (nanoTime > finishIfBackpressureEngaged && isBackPressureEngaged()) {
+                        return false;
+                    }
 
-                    if (shouldRun && numRelationships > 0) {
+
+                    if (!isWorkToDo(procNode)) {
+                        break;
+                    }
+                    if (isYielded(procNode)) {
+                        break;
+                    }
+
+                    if (numRelationships > 0) {
                         final int requiredNumberOfAvailableRelationships = procNode.isTriggerWhenAnyDestinationAvailable() ? 1 : numRelationships;
                         shouldRun = context.isRelationshipAvailabilitySatisfied(requiredNumberOfAvailableRelationships);
                     }
                 }
             } catch (final ProcessException pe) {
-                final ProcessorLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
+                final ComponentLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
                 procLog.error("Failed to process session due to {}", new Object[]{pe});
             } catch (final Throwable t) {
-                // Use ProcessorLog to log the event so that a bulletin will be created for this processor
-                final ProcessorLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
+                // Use ComponentLog to log the event so that a bulletin will be created for this processor
+                final ComponentLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
                 procLog.error("{} failed to process session due to {}", new Object[]{procNode.getProcessor(), t});
                 procLog.warn("Processor Administratively Yielded for {} due to processing failure", new Object[]{schedulingAgent.getAdministrativeYieldDuration()});
                 logger.warn("Administratively Yielding {} due to uncaught Exception: {}", procNode.getProcessor(), t.toString());
@@ -162,7 +189,7 @@ public class ContinuallyRunProcessorTask implements Callable<Boolean> {
                     try {
                         rawSession.commit();
                     } catch (final Exception e) {
-                        final ProcessorLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
+                        final ComponentLog procLog = new SimpleProcessLogger(procNode.getIdentifier(), procNode.getProcessor());
                         procLog.error("Failed to commit session {} due to {}; rolling back", new Object[] { rawSession, e.toString() }, e);
 
                         try {
@@ -174,15 +201,6 @@ public class ContinuallyRunProcessorTask implements Callable<Boolean> {
                 }
 
                 final long processingNanos = System.nanoTime() - startNanos;
-
-                // if the processor is no longer scheduled to run and this is the last thread,
-                // invoke the OnStopped methods
-                if (!scheduleState.isScheduled() && scheduleState.getActiveThreadCount() == 1 && scheduleState.mustCallOnStoppedMethods()) {
-                    try (final NarCloseable x = NarCloseable.withNarLoader()) {
-                        ReflectionUtils.quietlyInvokeMethodsWithAnnotations(OnStopped.class, org.apache.nifi.processor.annotation.OnStopped.class, procNode.getProcessor(), processContext);
-                        flowController.heartbeat();
-                    }
-                }
 
                 try {
                     final StandardFlowFileEvent procEvent = new StandardFlowFileEvent(procNode.getIdentifier());

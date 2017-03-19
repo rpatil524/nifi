@@ -15,9 +15,9 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="reporting-task-configuration">
-    <div class="reporting-task-configuration-tab-container">
-        <div id="reporting-task-configuration-tabs"></div>
+<div id="reporting-task-configuration" class="hidden large-dialog">
+    <div class="reporting-task-configuration-tab-container dialog-content">
+        <div id="reporting-task-configuration-tabs" class="tab-container"></div>
         <div id="reporting-task-configuration-tabs-content">
             <div id="reporting-task-standard-settings-tab-content" class="configuration-tab">
                 <div class="settings-left">
@@ -27,7 +27,7 @@
                             <input type="text" id="reporting-task-name" name="reporting-task-name"/>
                             <div class="reporting-task-enabled-container">
                                 <div id="reporting-task-enabled" class="nf-checkbox checkbox-unchecked"></div>
-                                <span> Enabled</span>
+                                <span class="nf-checkbox-label"> Enabled</span>
                             </div>
                         </div>
                         <div class="reporting-task-read-only setting-field hidden">
@@ -46,25 +46,13 @@
                             <span id="reporting-task-type"></span>
                         </div>
                     </div>
-                    <div id="reporting-task-availability-setting-container" class="setting hidden">
-                        <div class="availability-setting">
-                            <div class="setting-name">
-                                Availability
-                                <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="Where this controller service is available."/>
-                            </div>
-                            <div class="setting-field">
-                                <div id="reporting-task-availability"></div>
-                            </div>
-                        </div>
-                        <div class="clear"></div>
-                    </div>
                 </div>
                 <div class="spacer">&nbsp;</div>
                 <div class="settings-right">
                     <div class="setting">
                         <div class="setting-name">
                             Scheduling strategy
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="The strategy used to schedule this reporting task."/>
+                            <div class="fa fa-question-circle" alt="Info" title="The strategy used to schedule this reporting task."></div>
                         </div>
                         <div class="reporting-task-editable setting-field">
                             <div id="reporting-task-scheduling-strategy-combo"></div>
@@ -76,7 +64,7 @@
                     <div class="setting">
                         <div class="setting-name">
                             Run schedule
-                            <img class="setting-icon icon-info" src="images/iconInfo.png" alt="Info" title="The amount of time that should elapse between task executions."/>
+                            <div class="fa fa-question-circle" alt="Info" title="The amount of time that should elapse between task executions."></div>
                         </div>
                         <div class="reporting-task-editable setting-field">
                             <input type="text" id="reporting-task-timer-driven-scheduling-period" class="reporting-task-scheduling-period"/>

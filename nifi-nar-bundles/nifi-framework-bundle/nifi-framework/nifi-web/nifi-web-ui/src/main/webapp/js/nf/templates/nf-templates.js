@@ -15,139 +15,71 @@
  * limitations under the License.
  */
 
-/* global nf, top */
+/* global top, define, module, require, exports */
 
-$(document).ready(function () {
-    // initialize the templates page
-    nf.Templates.init();
-});
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'nf.Common',
+                'nf.TemplatesTable',
+                'nf.ErrorHandler',
+                'nf.Storage'],
+            function ($, nfCommon, nfTemplatesTable, nfErrorHandler, nfStorage) {
+                return (nf.Templates = factory($, nfCommon, nfTemplatesTable, nfErrorHandler, nfStorage));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.Templates =
+            factory(require('jquery'),
+                require('nf.Common'),
+                require('nf.TemplatesTable'),
+                require('nf.ErrorHandler'),
+                require('nf.Storage')));
+    } else {
+        nf.Templates = factory(root.$,
+            root.nf.Common,
+            root.nf.TemplatesTable,
+            root.nf.ErrorHandler,
+            root.nf.Storage);
+    }
+}(this, function ($, nfCommon, nfTemplatesTable, nfErrorHandler, nfStorage) {
+    'use strict';
 
-nf.Templates = (function () {
+    $(document).ready(function () {
+        // initialize the templates page
+        nfTemplates.init();
+    });
 
     /**
      * Configuration object used to hold a number of configuration items.
      */
     var config = {
         urls: {
-            banners: '../nifi-api/controller/banners',
-            controllerAbout: '../nifi-api/controller/about',
-            authorities: '../nifi-api/controller/authorities'
+            banners: '../nifi-api/flow/banners',
+            about: '../nifi-api/flow/about',
+            currentUser: '../nifi-api/flow/current-user'
         }
     };
 
     /**
-     * Loads the current users authorities.
+     * Loads the current users.
      */
-    var loadAuthorities = function () {
-        return $.Deferred(function (deferred) {
-            $.ajax({
-                type: 'GET',
-                url: config.urls.authorities,
-                dataType: 'json'
-            }).done(function (response) {
-                if (nf.Common.isDefinedAndNotNull(response.authorities)) {
-                    // record the users authorities
-                    nf.Common.setAuthorities(response.authorities);
-                    deferred.resolve();
-                } else {
-                    deferred.reject();
-                }
-            }).fail(function (xhr, status, error) {
-                nf.Common.handleAjaxError(xhr, status, error);
-                deferred.reject();
-            });
-        }).promise();
+    var loadCurrentUser = function () {
+        return $.ajax({
+            type: 'GET',
+            url: config.urls.currentUser,
+            dataType: 'json'
+        }).done(function (currentUser) {
+            nfCommon.setCurrentUser(currentUser);
+        }).fail(nfErrorHandler.handleAjaxError);
     };
 
     /**
      * Initializes the templates table.
      */
     var initializeTemplatesPage = function () {
-        var selectStatusMessage = 'Select template to import';
-
         // define mouse over event for the refresh button
-        nf.Common.addHoverEffect('#refresh-button', 'button-refresh', 'button-refresh-hover').click(function () {
-            nf.TemplatesTable.loadTemplatesTable();
-        });
-
-        // initialize the upload template status
-        $('#upload-template-status').text(selectStatusMessage);
-
-        // add a hover effect to the browse button
-        nf.Common.addHoverEffect('#select-template-button', 'button-normal', 'button-over');
-
-        // add a handler for the change file input chain event
-        $('#template-file-field').on('change', function (e) {
-            var filename = $(this).val();
-            if (!nf.Common.isBlank(filename)) {
-                filename = filename.replace(/^.*[\\\/]/, '');
-            }
-
-            // set the filename
-            $('#selected-template-name').text(filename);
-
-            // update the container visibility
-            $('#select-template-container').hide();
-            $('#submit-template-container').show();
-        });
-
-        // handles any uploading error - could be an error response or a successful response with an encoded error
-        var handleError = function (error) {
-            // show any errors
-            $('#upload-template-status').removeClass('import-status').addClass('import-status-error').text(error);
-
-            // clear the form
-            $('#cancel-upload-template-button').click();
-        };
-
-        // initialize the form
-        var templateForm = $('#template-upload-form').ajaxForm({
-            dataType: 'xml',
-            success: function (response, statusText, xhr, form) {
-                // see if the import was successful
-                if (response.documentElement.tagName === 'templateEntity') {
-                    // reset the status message
-                    $('#upload-template-status').removeClass('import-status-error').addClass('import-status').text(selectStatusMessage);
-
-                    // clear the form
-                    $('#cancel-upload-template-button').click();
-
-                    // reload the templates table
-                    nf.TemplatesTable.loadTemplatesTable();
-                } else {
-                    // import failed
-                    var status = 'Unable to import template. Please check the log for errors.';
-                    if (response.documentElement.tagName === 'errorResponse') {
-                        // if a more specific error was given, use it
-                        var errorMessage = response.documentElement.getAttribute('statusText');
-                        if (!nf.Common.isBlank(errorMessage)) {
-                            status = errorMessage;
-                        }
-                    }
-                    handleError(status);
-                }
-            },
-            error: function (xhr, statusText, error) {
-                handleError(error);
-            }
-        });
-
-        // add a handler for the upload button
-        nf.Common.addHoverEffect('#upload-template-button', 'button-normal', 'button-over').click(function () {
-            templateForm.submit();
-        });
-
-        // add a handler for the cancel upload button
-        nf.Common.addHoverEffect('#cancel-upload-template-button', 'button-normal', 'button-over').click(function () {
-            // set the filename
-            $('#selected-template-name').text('');
-
-            // reset the form to ensure that the change fire will fire
-            templateForm.resetForm();
-
-            // update the container visibility
-            $('#select-template-container').show();
-            $('#submit-template-container').hide();
+        $('#refresh-button').click(function () {
+            nfTemplatesTable.loadTemplatesTable();
         });
 
         // get the banners if we're not in the shell
@@ -159,8 +91,8 @@ nf.Templates = (function () {
                     dataType: 'json'
                 }).done(function (response) {
                     // ensure the banners response is specified
-                    if (nf.Common.isDefinedAndNotNull(response.banners)) {
-                        if (nf.Common.isDefinedAndNotNull(response.banners.headerText) && response.banners.headerText !== '') {
+                    if (nfCommon.isDefinedAndNotNull(response.banners)) {
+                        if (nfCommon.isDefinedAndNotNull(response.banners.headerText) && response.banners.headerText !== '') {
                             // update the header text
                             var bannerHeader = $('#banner-header').text(response.banners.headerText).show();
 
@@ -174,7 +106,7 @@ nf.Templates = (function () {
                             updateTop('templates');
                         }
 
-                        if (nf.Common.isDefinedAndNotNull(response.banners.footerText) && response.banners.footerText !== '') {
+                        if (nfCommon.isDefinedAndNotNull(response.banners.footerText) && response.banners.footerText !== '') {
                             // update the footer text and show it
                             var bannerFooter = $('#banner-footer').text(response.banners.footerText).show();
 
@@ -190,7 +122,7 @@ nf.Templates = (function () {
 
                     deferred.resolve();
                 }).fail(function (xhr, status, error) {
-                    nf.Common.handleAjaxError(xhr, status, error);
+                    nfErrorHandler.handleAjaxError(xhr, status, error);
                     deferred.reject();
                 });
             } else {
@@ -199,28 +131,44 @@ nf.Templates = (function () {
         }).promise();
     };
 
-    return {
+    var nfTemplates = {
         /**
          * Initializes the templates page.
          */
         init: function () {
-            // load the users authorities
-            loadAuthorities().done(function () {
+            nfStorage.init();
+
+            // load the current user
+            loadCurrentUser().done(function () {
 
                 // create the templates table
-                nf.TemplatesTable.init();
+                nfTemplatesTable.init();
 
                 // load the table
-                nf.TemplatesTable.loadTemplatesTable().done(function () {
+                nfTemplatesTable.loadTemplatesTable().done(function () {
                     // once the table is initialized, finish initializing the page
                     initializeTemplatesPage().done(function () {
-                        // configure the initial grid height
-                        nf.TemplatesTable.resetTableSize();
+                        var setBodySize = function () {
+                            //alter styles if we're not in the shell
+                            if (top === window) {
+                                $('body').css({
+                                    'height': $(window).height() + 'px',
+                                    'width': $(window).width() + 'px'
+                                });
+
+                                $('#templates').css('margin', 40);
+                                $('#templates-table').css('bottom', 127);
+                                $('#templates-refresh-container').css('margin', 40);
+                            }
+
+                            // configure the initial grid height
+                            nfTemplatesTable.resetTableSize();
+                        };
 
                         // get the about details
                         $.ajax({
                             type: 'GET',
-                            url: config.urls.controllerAbout,
+                            url: config.urls.about,
                             dataType: 'json'
                         }).done(function (response) {
                             var aboutDetails = response.about;
@@ -229,10 +177,50 @@ nf.Templates = (function () {
                             // set the document title and the about title
                             document.title = templatesTitle;
                             $('#templates-header-text').text(templatesTitle);
-                        }).fail(nf.Common.handleAjaxError);
+
+                            // set the initial size
+                            setBodySize();
+                        }).fail(nfErrorHandler.handleAjaxError);
+
+                        $(window).on('resize', function (e) {
+                            setBodySize();
+                            // resize dialogs when appropriate
+                            var dialogs = $('.dialog');
+                            for (var i = 0, len = dialogs.length; i < len; i++) {
+                                if ($(dialogs[i]).is(':visible')) {
+                                    setTimeout(function (dialog) {
+                                        dialog.modal('resize');
+                                    }, 50, $(dialogs[i]));
+                                }
+                            }
+
+                            // resize grids when appropriate
+                            var gridElements = $('*[class*="slickgrid_"]');
+                            for (var j = 0, len = gridElements.length; j < len; j++) {
+                                if ($(gridElements[j]).is(':visible')) {
+                                    setTimeout(function (gridElement) {
+                                        gridElement.data('gridInstance').resizeCanvas();
+                                    }, 50, $(gridElements[j]));
+                                }
+                            }
+
+                            // toggle tabs .scrollable when appropriate
+                            var tabsContainers = $('.tab-container');
+                            var tabsContents = [];
+                            for (var k = 0, len = tabsContainers.length; k < len; k++) {
+                                if ($(tabsContainers[k]).is(':visible')) {
+                                    tabsContents.push($('#' + $(tabsContainers[k]).attr('id') + '-content'));
+                                }
+                            }
+                            $.each(tabsContents, function (index, tabsContent) {
+                                nfCommon.toggleScrollable(tabsContent.get(0));
+                            });
+                        });
                     });
                 });
             });
         }
     };
-}());
+
+    return nfTemplates;
+}));

@@ -16,14 +16,6 @@
  */
 package org.apache.nifi.processors.hadoop;
 
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.regex.Pattern;
-
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -41,6 +33,14 @@ import org.apache.nifi.processors.hadoop.util.OutputStreamWritable;
 import org.apache.nifi.processors.hadoop.util.SequenceFileReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * This class reads a SequenceFile and generates FlowFiles, one per KeyValue pair in the SequenceFile. The FlowFile name is based on the the incoming file name with System nanotime appended; the
@@ -63,7 +63,7 @@ public class KeyValueReader implements SequenceFileReader<Set<FlowFile>> {
         final SequenceFile.Reader reader;
 
         Set<FlowFile> flowFiles = new HashSet<>();
-        reader = new SequenceFile.Reader(fileSystem, file, configuration);
+        reader = new SequenceFile.Reader(configuration, Reader.file(fileSystem.makeQualified(file)));
         final Text key = new Text();
         final KeyValueWriterCallback callback = new KeyValueWriterCallback(reader);
         final String inputfileName = file.getName() + "." + System.nanoTime() + ".";

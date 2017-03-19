@@ -29,6 +29,8 @@ import java.util.Set;
 import org.apache.nifi.annotation.behavior.DynamicProperties;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
@@ -63,6 +65,7 @@ import ca.uhn.hl7v2.validation.impl.ValidationContextFactory;
 @EventDriven
 @SideEffectFree
 @SupportsBatching
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"HL7", "healthcare", "route", "Health Level 7"})
 @DynamicProperties({
     @DynamicProperty(name = "Name of a Relationship", value = "An HL7 Query Language query",
@@ -158,7 +161,7 @@ public class RouteHL7 extends AbstractProcessor {
 
         @SuppressWarnings("resource")
         final HapiContext hapiContext = new DefaultHapiContext();
-        hapiContext.setValidationContext(ValidationContextFactory.noValidation());
+        hapiContext.setValidationContext((ca.uhn.hl7v2.validation.ValidationContext) ValidationContextFactory.noValidation());
 
         final PipeParser parser = hapiContext.getPipeParser();
         final String hl7Text = new String(buffer, charset);

@@ -16,8 +16,36 @@
  */
 package org.apache.nifi.processors.standard;
 
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.ReadsAttribute;
+import org.apache.nifi.annotation.behavior.ReadsAttributes;
+import org.apache.nifi.annotation.behavior.SupportsBatching;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.SeeAlso;
+import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.dbcp.DBCPService;
+import org.apache.nifi.flowfile.FlowFile;
+import org.apache.nifi.flowfile.attributes.FragmentAttributes;
+import org.apache.nifi.processor.AbstractProcessor;
+import org.apache.nifi.processor.FlowFileFilter;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.processor.io.InputStreamCallback;
+import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.stream.io.StreamUtils;
+
+import javax.xml.bind.DatatypeConverter;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.BatchUpdateException;
 import java.sql.Connection;
@@ -30,6 +58,11 @@ import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collections;
@@ -45,49 +78,36 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.nifi.annotation.behavior.ReadsAttribute;
-import org.apache.nifi.annotation.behavior.ReadsAttributes;
-import org.apache.nifi.annotation.behavior.SupportsBatching;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.documentation.SeeAlso;
-import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.dbcp.DBCPService;
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.processor.AbstractProcessor;
-import org.apache.nifi.processor.FlowFileFilter;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.exception.ProcessException;
-import org.apache.nifi.processor.io.InputStreamCallback;
-import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.stream.io.StreamUtils;
-
 @SupportsBatching
 @SeeAlso(ConvertJSONToSQL.class)
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"sql", "put", "rdbms", "database", "update", "insert", "relational"})
 @CapabilityDescription("Executes a SQL UPDATE or INSERT command. The content of an incoming FlowFile is expected to be the SQL command "
         + "to execute. The SQL command may use the ? to escape parameters. In this case, the parameters to use must exist as FlowFile attributes "
         + "with the naming convention sql.args.N.type and sql.args.N.value, where N is a positive integer. The sql.args.N.type is expected to be "
         + "a number indicating the JDBC Type. The content of the FlowFile is expected to be in UTF-8 format.")
 @ReadsAttributes({
-    @ReadsAttribute(attribute="fragment.identifier", description="If the <Support Fragment Transactions> property is true, this attribute is used to determine whether or "
-            + "not two FlowFiles belong to the same transaction."),
-    @ReadsAttribute(attribute="fragment.count", description="If the <Support Fragment Transactions> property is true, this attribute is used to determine how many FlowFiles "
-            + "are needed to complete the transaction."),
-    @ReadsAttribute(attribute="fragment.index", description="If the <Support Fragment Transactions> property is true, this attribute is used to determine the order that the FlowFiles "
-            + "in a transaction should be evaluated."),
-    @ReadsAttribute(attribute="sql.args.N.type", description="Incoming FlowFiles are expected to be parameterized SQL statements. The type of each Parameter is specified as an integer "
-            + "that represents the JDBC Type of the parameter."),
-    @ReadsAttribute(attribute="sql.args.N.value", description="Incoming FlowFiles are expected to be parameterized SQL statements. The value of the Parameters are specified as "
-            + "sql.args.1.value, sql.args.2.value, sql.args.3.value, and so on. The type of the sql.args.1.value Parameter is specified by the sql.args.1.type attribute.")
+        @ReadsAttribute(attribute = "fragment.identifier", description = "If the <Support Fragment Transactions> property is true, this attribute is used to determine whether or "
+                + "not two FlowFiles belong to the same transaction."),
+        @ReadsAttribute(attribute = "fragment.count", description = "If the <Support Fragment Transactions> property is true, this attribute is used to determine how many FlowFiles "
+                + "are needed to complete the transaction."),
+        @ReadsAttribute(attribute = "fragment.index", description = "If the <Support Fragment Transactions> property is true, this attribute is used to determine the order that the FlowFiles "
+                + "in a transaction should be evaluated."),
+        @ReadsAttribute(attribute = "sql.args.N.type", description = "Incoming FlowFiles are expected to be parametrized SQL statements. The type of each Parameter is specified as an integer "
+                + "that represents the JDBC Type of the parameter."),
+        @ReadsAttribute(attribute = "sql.args.N.value", description = "Incoming FlowFiles are expected to be parametrized SQL statements. The value of the Parameters are specified as "
+                + "sql.args.1.value, sql.args.2.value, sql.args.3.value, and so on. The type of the sql.args.1.value Parameter is specified by the sql.args.1.type attribute."),
+        @ReadsAttribute(attribute = "sql.args.N.format", description = "This attribute is always optional, but default options may not always work for your data. "
+                + "Incoming FlowFiles are expected to be parametrized SQL statements. In some cases "
+                + "a format option needs to be specified, currently this is only applicable for binary data types and timestamps. For binary data types "
+                + "available options are 'ascii', 'base64' and 'hex'.  In 'ascii' format each string character in your attribute value represents a single byte, this is the default format "
+                + "and the format provided by Avro Processors. In 'base64' format your string is a Base64 encoded string.  In 'hex' format the string is hex encoded with all "
+                + "letters in upper case and no '0x' at the beginning. For timestamps, the format can be specified according to java.time.format.DateTimeFormatter."
+                + "Customer and named patterns are accepted i.e. ('yyyy-MM-dd','ISO_OFFSET_DATE_TIME')")
 })
 @WritesAttributes({
-    @WritesAttribute(attribute="sql.generated.key", description="If the database generated a key for an INSERT statement and the Obtain Generated Keys property is set to true, "
-            + "this attribute will be added to indicate the generated key, if possible. This feature is not supported by all database vendors.")
+        @WritesAttribute(attribute = "sql.generated.key", description = "If the database generated a key for an INSERT statement and the Obtain Generated Keys property is set to true, "
+                + "this attribute will be added to indicate the generated key, if possible. This feature is not supported by all database vendors.")
 })
 public class PutSQL extends AbstractProcessor {
 
@@ -101,7 +121,7 @@ public class PutSQL extends AbstractProcessor {
     static final PropertyDescriptor SUPPORT_TRANSACTIONS = new PropertyDescriptor.Builder()
             .name("Support Fragmented Transactions")
             .description("If true, when a FlowFile is consumed by this Processor, the Processor will first check the fragment.identifier and fragment.count attributes of that FlowFile. "
-                    + "If the fragment.count value is greater than 1, the Processor will not process any FlowFile will that fragment.identifier until all are available; "
+                    + "If the fragment.count value is greater than 1, the Processor will not process any FlowFile with that fragment.identifier until all are available; "
                     + "at that point, it will process all FlowFiles with that fragment.identifier as a single transaction, in the order specified by the FlowFiles' fragment.index attributes. "
                     + "This Provides atomicity of those SQL statements. If this value is false, these attributes will be ignored and the updates will occur independent of one another.")
             .allowableValues("true", "false")
@@ -144,11 +164,13 @@ public class PutSQL extends AbstractProcessor {
             .build();
 
     private static final Pattern SQL_TYPE_ATTRIBUTE_PATTERN = Pattern.compile("sql\\.args\\.(\\d+)\\.type");
-    private static final Pattern NUMBER_PATTERN = Pattern.compile("\\d+");
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+");
 
-    private static final String FRAGMENT_ID_ATTR = "fragment.identifier";
-    private static final String FRAGMENT_INDEX_ATTR = "fragment.index";
-    private static final String FRAGMENT_COUNT_ATTR = "fragment.count";
+    private static final String FRAGMENT_ID_ATTR = FragmentAttributes.FRAGMENT_ID.key();
+    private static final String FRAGMENT_INDEX_ATTR = FragmentAttributes.FRAGMENT_INDEX.key();
+    private static final String FRAGMENT_COUNT_ATTR = FragmentAttributes.FRAGMENT_COUNT.key();
+
+    private static final Pattern LONG_PATTERN = Pattern.compile("^\\d{1,19}$");
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
@@ -187,7 +209,7 @@ public class PutSQL extends AbstractProcessor {
         final long startNanos = System.nanoTime();
         final boolean obtainKeys = context.getProperty(OBTAIN_GENERATED_KEYS).asBoolean();
         final Map<String, StatementFlowFileEnclosure> statementMap = new HashMap<>(); // Map SQL to a PreparedStatement and FlowFiles
-        final List<FlowFile> sentFlowFiles = new ArrayList<>();  // flowfiles that have been sent
+        final List<FlowFile> sentFlowFiles = new ArrayList<>(); // flowfiles that have been sent
         final List<FlowFile> processedFlowFiles = new ArrayList<>(); // all flowfiles that we have processed
         final Set<StatementFlowFileEnclosure> enclosuresToExecute = new LinkedHashSet<>(); // the enclosures that we've processed
 
@@ -300,7 +322,7 @@ public class PutSQL extends AbstractProcessor {
                         int failureCount = 0;
                         int successCount = 0;
                         int retryCount = 0;
-                        for (int i=0; i < updateCounts.length; i++) {
+                        for (int i = 0; i < updateCounts.length; i++) {
                             final int updateCount = updateCounts[i];
                             final FlowFile flowFile = batchFlowFiles.get(i);
                             if (updateCount == Statement.EXECUTE_FAILED) {
@@ -484,7 +506,7 @@ public class PutSQL extends AbstractProcessor {
      *
      * @param stmt the statement that generated a key
      * @return the key that was generated from the given statement, or <code>null</code> if no key
-     * was generated or it could not be determined.
+     *         was generated or it could not be determined.
      */
     private String determineGeneratedKey(final PreparedStatement stmt) {
         try {
@@ -514,7 +536,7 @@ public class PutSQL extends AbstractProcessor {
      * @throws SQLException if unable to create the appropriate PreparedStatement
      */
     private StatementFlowFileEnclosure getEnclosure(final String sql, final Connection conn, final Map<String, StatementFlowFileEnclosure> stmtMap,
-            final boolean obtainKeys, final boolean fragmentedTransaction) throws SQLException {
+                                                    final boolean obtainKeys, final boolean fragmentedTransaction) throws SQLException {
         StatementFlowFileEnclosure enclosure = stmtMap.get(sql);
         if (enclosure != null) {
             return enclosure;
@@ -602,11 +624,17 @@ public class PutSQL extends AbstractProcessor {
                 final int jdbcType = Integer.parseInt(entry.getValue());
                 final String valueAttrName = "sql.args." + parameterIndex + ".value";
                 final String parameterValue = attributes.get(valueAttrName);
+                final String formatAttrName = "sql.args." + parameterIndex + ".format";
+                final String parameterFormat = attributes.containsKey(formatAttrName)? attributes.get(formatAttrName):"";
 
                 try {
-                    setParameter(stmt, valueAttrName, parameterIndex, parameterValue, jdbcType);
+                    setParameter(stmt, valueAttrName, parameterIndex, parameterValue, jdbcType, parameterFormat);
                 } catch (final NumberFormatException nfe) {
                     throw new ProcessException("The value of the " + valueAttrName + " is '" + parameterValue + "', which cannot be converted into the necessary data type", nfe);
+                } catch (ParseException pe) {
+                    throw new ProcessException("The value of the " + valueAttrName + " is '" + parameterValue + "', which cannot be converted to a timestamp", pe);
+                } catch (UnsupportedEncodingException uee) {
+                    throw new ProcessException("The value of the " + valueAttrName + " is '" + parameterValue + "', which cannot be converted to UTF-8", uee);
                 }
             }
         }
@@ -620,9 +648,9 @@ public class PutSQL extends AbstractProcessor {
      *
      * @param flowFiles the FlowFiles whose relationship is to be determined
      * @param transactionTimeoutMillis the maximum amount of time (in milliseconds) that we should wait
-     *              for all FlowFiles in a transaction to be present before routing to failure
+     *            for all FlowFiles in a transaction to be present before routing to failure
      * @return the appropriate relationship to route the FlowFiles to, or <code>null</code> if the FlowFiles
-     *             should instead be processed
+     *         should instead be processed
      */
     Relationship determineRelationship(final List<FlowFile> flowFiles, final Long transactionTimeoutMillis) {
         int selectedNumFragments = 0;
@@ -634,7 +662,7 @@ public class PutSQL extends AbstractProcessor {
                 return null;
             } else if (fragmentCount == null) {
                 getLogger().error("Cannot process {} because there are {} FlowFiles with the same fragment.identifier "
-                        + "attribute but not all FlowFiles have a fragment.count attribute; routing all to failure",  new Object[] {flowFile, flowFiles.size()});
+                        + "attribute but not all FlowFiles have a fragment.count attribute; routing all to failure", new Object[] {flowFile, flowFiles.size()});
                 return REL_FAILURE;
             }
 
@@ -693,7 +721,7 @@ public class PutSQL extends AbstractProcessor {
         }
 
         if (selectedNumFragments == flowFiles.size()) {
-            return null;   // no relationship to route FlowFiles to yet - process the FlowFiles.
+            return null; // no relationship to route FlowFiles to yet - process the FlowFiles.
         }
 
         long latestQueueTime = 0L;
@@ -711,7 +739,7 @@ public class PutSQL extends AbstractProcessor {
         }
 
         getLogger().debug("Not enough FlowFiles for transaction. Returning all FlowFiles to queue");
-        return Relationship.SELF;  // not enough FlowFiles for this transaction. Return them all to queue.
+        return Relationship.SELF; // not enough FlowFiles for this transaction. Return them all to queue.
     }
 
     /**
@@ -725,12 +753,17 @@ public class PutSQL extends AbstractProcessor {
      * @param jdbcType the JDBC Type of the SQL parameter to set
      * @throws SQLException if the PreparedStatement throws a SQLException when calling the appropriate setter
      */
-    private void setParameter(final PreparedStatement stmt, final String attrName, final int parameterIndex, final String parameterValue, final int jdbcType) throws SQLException {
+    private void setParameter(final PreparedStatement stmt, final String attrName, final int parameterIndex, final String parameterValue, final int jdbcType,
+                              final String valueFormat)
+            throws SQLException, ParseException, UnsupportedEncodingException {
         if (parameterValue == null) {
             stmt.setNull(parameterIndex, jdbcType);
         } else {
             switch (jdbcType) {
                 case Types.BIT:
+                    stmt.setBoolean(parameterIndex, "1".equals(parameterValue) || "t".equalsIgnoreCase(parameterValue) || Boolean.parseBoolean(parameterValue));
+                     break;
+                case Types.BOOLEAN:
                     stmt.setBoolean(parameterIndex, Boolean.parseBoolean(parameterValue));
                     break;
                 case Types.TINYINT:
@@ -752,6 +785,10 @@ public class PutSQL extends AbstractProcessor {
                 case Types.DOUBLE:
                     stmt.setDouble(parameterIndex, Double.parseDouble(parameterValue));
                     break;
+                case Types.DECIMAL:
+                case Types.NUMERIC:
+                    stmt.setBigDecimal(parameterIndex, new BigDecimal(parameterValue));
+                    break;
                 case Types.DATE:
                     stmt.setDate(parameterIndex, new Date(Long.parseLong(parameterValue)));
                     break;
@@ -759,7 +796,49 @@ public class PutSQL extends AbstractProcessor {
                     stmt.setTime(parameterIndex, new Time(Long.parseLong(parameterValue)));
                     break;
                 case Types.TIMESTAMP:
-                    stmt.setTimestamp(parameterIndex, new Timestamp(Long.parseLong(parameterValue)));
+                    long lTimestamp=0L;
+
+                    // Backwards compatibility note: Format was unsupported for a timestamp field.
+                    if (valueFormat.equals("")) {
+                        if(LONG_PATTERN.matcher(parameterValue).matches()){
+                            lTimestamp = Long.parseLong(parameterValue);
+                        } else {
+                            final SimpleDateFormat dateFormat  = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+                            java.util.Date parsedDate = dateFormat.parse(parameterValue);
+                            lTimestamp = parsedDate.getTime();
+                        }
+                    }else {
+                        final DateTimeFormatter dtFormatter = getDateTimeFormatter(valueFormat);
+                        TemporalAccessor accessor = dtFormatter.parse(parameterValue);
+                        java.util.Date parsedDate = java.util.Date.from(Instant.from(accessor));
+                        lTimestamp = parsedDate.getTime();
+                    }
+
+                    stmt.setTimestamp(parameterIndex, new Timestamp(lTimestamp));
+
+                    break;
+                case Types.BINARY:
+                case Types.VARBINARY:
+                case Types.LONGVARBINARY:
+                    byte[] bValue;
+
+                    switch(valueFormat){
+                        case "":
+                        case "ascii":
+                            bValue = parameterValue.getBytes("ASCII");
+                            break;
+                        case "hex":
+                            bValue = DatatypeConverter.parseHexBinary(parameterValue);
+                            break;
+                        case "base64":
+                            bValue = DatatypeConverter.parseBase64Binary(parameterValue);
+                            break;
+                        default:
+                            throw new ParseException("Unable to parse binary data using the formatter `" + valueFormat + "`.",0);
+                    }
+
+                    stmt.setBinaryStream(parameterIndex, new ByteArrayInputStream(bValue), bValue.length);
+
                     break;
                 case Types.CHAR:
                 case Types.VARCHAR:
@@ -768,12 +847,32 @@ public class PutSQL extends AbstractProcessor {
                     stmt.setString(parameterIndex, parameterValue);
                     break;
                 default:
-                    throw new SQLException("The '" + attrName + "' attribute has a value of '" + parameterValue
-                            + "' and a type of '" + jdbcType + "' but this is not a known data type");
+                    stmt.setObject(parameterIndex, parameterValue, jdbcType);
+                    break;
             }
         }
     }
 
+    private DateTimeFormatter getDateTimeFormatter(String pattern) {
+        switch(pattern) {
+            case "BASIC_ISO_DATE": return DateTimeFormatter.BASIC_ISO_DATE;
+            case "ISO_LOCAL_DATE": return DateTimeFormatter.ISO_LOCAL_DATE;
+            case "ISO_OFFSET_DATE": return DateTimeFormatter.ISO_OFFSET_DATE;
+            case "ISO_DATE": return DateTimeFormatter.ISO_DATE;
+            case "ISO_LOCAL_TIME": return DateTimeFormatter.ISO_LOCAL_TIME;
+            case "ISO_OFFSET_TIME": return DateTimeFormatter.ISO_OFFSET_TIME;
+            case "ISO_TIME": return DateTimeFormatter.ISO_TIME;
+            case "ISO_LOCAL_DATE_TIME": return DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+            case "ISO_OFFSET_DATE_TIME": return DateTimeFormatter.ISO_OFFSET_DATE_TIME;
+            case "ISO_ZONED_DATE_TIME": return DateTimeFormatter.ISO_ZONED_DATE_TIME;
+            case "ISO_DATE_TIME": return DateTimeFormatter.ISO_DATE_TIME;
+            case "ISO_ORDINAL_DATE": return DateTimeFormatter.ISO_ORDINAL_DATE;
+            case "ISO_WEEK_DATE": return DateTimeFormatter.ISO_WEEK_DATE;
+            case "ISO_INSTANT": return DateTimeFormatter.ISO_INSTANT;
+            case "RFC_1123_DATE_TIME": return DateTimeFormatter.RFC_1123_DATE_TIME;
+            default: return DateTimeFormatter.ofPattern(pattern);
+        }
+    }
 
     /**
      * A FlowFileFilter that is responsible for ensuring that the FlowFiles returned either belong

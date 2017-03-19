@@ -21,14 +21,18 @@
         <title><%= request.getAttribute("title") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getAttribute("title").toString()) %></title>
         <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
         <link rel="shortcut icon" href="images/nifi16.ico"/>
-        <link href="/nifi/css/message-pane.css" rel="stylesheet" type="text/css" />
-        <link href="/nifi/css/message-page.css" rel="stylesheet" type="text/css" />
+        <link rel="stylesheet" href="/nifi/assets/reset.css/reset.css" type="text/css" />
+        <link rel="stylesheet" href="/nifi/css/common-ui.css" type="text/css" />
+        <link rel="stylesheet" href="/nifi/fonts/flowfont/flowfont.css" type="text/css" />
+        <link rel="stylesheet" href="/nifi/assets/font-awesome/css/font-awesome.min.css" type="text/css" />
+        <link rel="stylesheet" href="/nifi/css/message-pane.css" type="text/css" />
+        <link rel="stylesheet" href="/nifi/css/message-page.css" type="text/css" />
     </head>
 
     <body class="message-pane">
         <div class="message-pane-message-box">
-            <p class="message-pane-title"><%= request.getAttribute("title") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getAttribute("title").toString()) %></p>
-            <p class="message-pane-content"><%= request.getAttribute("messages") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getAttribute("messages").toString()) %></p>
+            <div class="message-pane-title"><%= request.getAttribute("title") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getAttribute("title").toString()) %></div>
+            <div class="message-pane-content"><%= request.getAttribute("messages") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getAttribute("messages").toString()) %></div>
         </div>
     </body>
 </html>

@@ -16,29 +16,35 @@
  */
 package org.apache.nifi.remote.client;
 
-import java.io.Closeable;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.Serializable;
-import java.security.KeyStore;
-import java.security.SecureRandom;
-import java.util.concurrent.TimeUnit;
-
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManagerFactory;
-
 import org.apache.nifi.events.EventReporter;
 import org.apache.nifi.remote.Transaction;
 import org.apache.nifi.remote.TransferDirection;
+import org.apache.nifi.remote.client.http.HttpClient;
 import org.apache.nifi.remote.client.socket.SocketClient;
 import org.apache.nifi.remote.exception.HandshakeException;
 import org.apache.nifi.remote.exception.PortNotRunningException;
 import org.apache.nifi.remote.exception.ProtocolException;
 import org.apache.nifi.remote.exception.UnknownPortException;
 import org.apache.nifi.remote.protocol.DataPacket;
+import org.apache.nifi.remote.protocol.SiteToSiteTransportProtocol;
+import org.apache.nifi.remote.protocol.http.HttpProxy;
+import org.apache.nifi.security.util.KeyStoreUtils;
+
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.Closeable;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Serializable;
+import java.net.InetAddress;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -144,7 +150,7 @@ public interface SiteToSiteClient extends Closeable {
 
         private static final long serialVersionUID = -4954962284343090219L;
 
-        private String url;
+        private Set<String> urls;
         private long timeoutNanos = TimeUnit.SECONDS.toNanos(30);
         private long penalizationNanos = TimeUnit.SECONDS.toNanos(3);
         private long idleExpirationNanos = TimeUnit.SECONDS.toNanos(30L);
@@ -155,7 +161,7 @@ public interface SiteToSiteClient extends Closeable {
         private String truststoreFilename;
         private String truststorePass;
         private KeystoreType truststoreType;
-        private EventReporter eventReporter;
+        private EventReporter eventReporter = EventReporter.NO_OP;
         private File peerPersistenceFile;
         private boolean useCompression;
         private String portName;
@@ -163,6 +169,9 @@ public interface SiteToSiteClient extends Closeable {
         private int batchCount;
         private long batchSize;
         private long batchNanos;
+        private InetAddress localAddress;
+        private SiteToSiteTransportProtocol transportProtocol = SiteToSiteTransportProtocol.RAW;
+        private HttpProxy httpProxy;
 
         /**
          * Populates the builder with values from the provided config
@@ -171,7 +180,7 @@ public interface SiteToSiteClient extends Closeable {
          * @return the builder
          */
         public Builder fromConfig(final SiteToSiteClientConfig config) {
-            this.url = config.getUrl();
+            this.urls = config.getUrls();
             this.timeoutNanos = config.getTimeout(TimeUnit.NANOSECONDS);
             this.penalizationNanos = config.getPenalizationPeriod(TimeUnit.NANOSECONDS);
             this.idleExpirationNanos = config.getIdleConnectionExpiration(TimeUnit.NANOSECONDS);
@@ -185,25 +194,69 @@ public interface SiteToSiteClient extends Closeable {
             this.eventReporter = config.getEventReporter();
             this.peerPersistenceFile = config.getPeerPersistenceFile();
             this.useCompression = config.isUseCompression();
+            this.transportProtocol = config.getTransportProtocol();
             this.portName = config.getPortName();
             this.portIdentifier = config.getPortIdentifier();
             this.batchCount = config.getPreferredBatchCount();
             this.batchSize = config.getPreferredBatchSize();
             this.batchNanos = config.getPreferredBatchDuration(TimeUnit.NANOSECONDS);
+            this.localAddress = config.getLocalAddress();
+            this.httpProxy = config.getHttpProxy();
 
             return this;
         }
 
         /**
-         * Specifies the URL of the remote NiFi instance. If this URL points to
-         * the Cluster Manager of a NiFi cluster, data transfer to and from
-         * nodes will be automatically load balanced across the different nodes.
+         * <p>Specifies the URL of the remote NiFi instance.</p>
+         * <p>If this URL points to a NiFi node in a NiFi cluster, data transfer to and from
+         * nodes will be automatically load balanced across the different nodes.</p>
+         *
+         * <p>For better connectivity with a NiFi cluster, use {@link #urls(Set)} instead.</p>
          *
          * @param url url of remote instance
          * @return the builder
          */
         public Builder url(final String url) {
-            this.url = url;
+            final Set<String> urls = new LinkedHashSet<>();
+            if (url != null && url.length() > 0) {
+                urls.add(url);
+            }
+            this.urls = urls;
+            return this;
+        }
+
+        /**
+         * <p>
+         * Specifies the local address to use when communicating with the remote NiFi instance.
+         * </p>
+         *
+         * @param localAddress the local address to use, or <code>null</code> to use <code>anyLocal</code> address.
+         * @return the builder
+         */
+        public Builder localAddress(final InetAddress localAddress) {
+            this.localAddress = localAddress;
+            return this;
+        }
+
+        /**
+         * <p>
+         * Specifies the URLs of the remote NiFi instance.
+         * </p>
+         * <p>
+         * If this URL points to a NiFi node in a NiFi cluster, data transfer to and from
+         * nodes will be automatically load balanced across the different nodes.
+         * </p>
+         *
+         * <p>
+         * Multiple urls provide better connectivity with a NiFi cluster, able to connect
+         * to the target cluster at long as one of the specified urls is accessible.
+         * </p>
+         *
+         * @param urls urls of remote instance
+         * @return the builder
+         */
+        public Builder urls(final Set<String> urls) {
+            this.urls = urls;
             return this;
         }
 
@@ -441,6 +494,16 @@ public interface SiteToSiteClient extends Closeable {
         }
 
         /**
+         * Specifies the protocol to use for site to site data transport.
+         * @param transportProtocol transport protocol
+         * @return the builder
+         */
+        public Builder transportProtocol(final SiteToSiteTransportProtocol transportProtocol) {
+            this.transportProtocol = transportProtocol;
+            return this;
+        }
+
+        /**
          * Specifies the name of the port to communicate with. Either the port
          * name or the port identifier must be specified.
          *
@@ -513,104 +576,7 @@ public interface SiteToSiteClient extends Closeable {
          * but does not create a SiteToSiteClient
          */
         public SiteToSiteClientConfig buildConfig() {
-            return new SiteToSiteClientConfig() {
-                private static final long serialVersionUID = 1L;
-
-                @Override
-                public boolean isUseCompression() {
-                    return Builder.this.isUseCompression();
-                }
-
-                @Override
-                public String getUrl() {
-                    return Builder.this.getUrl();
-                }
-
-                @Override
-                public long getTimeout(final TimeUnit timeUnit) {
-                    return Builder.this.getTimeout(timeUnit);
-                }
-
-                @Override
-                public long getIdleConnectionExpiration(final TimeUnit timeUnit) {
-                    return Builder.this.getIdleConnectionExpiration(timeUnit);
-                }
-
-                @Override
-                public SSLContext getSslContext() {
-                    return Builder.this.getSslContext();
-                }
-
-                @Override
-                public String getPortName() {
-                    return Builder.this.getPortName();
-                }
-
-                @Override
-                public String getPortIdentifier() {
-                    return Builder.this.getPortIdentifier();
-                }
-
-                @Override
-                public long getPenalizationPeriod(final TimeUnit timeUnit) {
-                    return Builder.this.getPenalizationPeriod(timeUnit);
-                }
-
-                @Override
-                public File getPeerPersistenceFile() {
-                    return Builder.this.getPeerPersistenceFile();
-                }
-
-                @Override
-                public EventReporter getEventReporter() {
-                    return Builder.this.getEventReporter();
-                }
-
-                @Override
-                public long getPreferredBatchDuration(final TimeUnit timeUnit) {
-                    return timeUnit.convert(batchNanos, TimeUnit.NANOSECONDS);
-                }
-
-                @Override
-                public long getPreferredBatchSize() {
-                    return batchSize;
-                }
-
-                @Override
-                public int getPreferredBatchCount() {
-                    return batchCount;
-                }
-
-                @Override
-                public String getKeystoreFilename() {
-                    return keystoreFilename;
-                }
-
-                @Override
-                public String getKeystorePassword() {
-                    return keystorePass;
-                }
-
-                @Override
-                public KeystoreType getKeystoreType() {
-                    return keystoreType;
-                }
-
-                @Override
-                public String getTruststoreFilename() {
-                    return truststoreFilename;
-                }
-
-                @Override
-                public String getTruststorePassword() {
-                    return truststorePass;
-                }
-
-                @Override
-                public KeystoreType getTruststoreType() {
-                    return truststoreType;
-                }
-            };
+            return new StandardSiteToSiteClientConfig(this);
         }
 
         /**
@@ -618,10 +584,11 @@ public interface SiteToSiteClient extends Closeable {
          *         data with remote instances of NiFi
          *
          * @throws IllegalStateException if either the url is not set or neither
-         *             the port name nor port identifier is set.
+         *             the port name nor port identifier is set,
+         *             or if the transport protocol is not supported.
          */
         public SiteToSiteClient build() {
-            if (url == null) {
+            if (urls == null) {
                 throw new IllegalStateException("Must specify URL to build Site-to-Site client");
             }
 
@@ -629,14 +596,24 @@ public interface SiteToSiteClient extends Closeable {
                 throw new IllegalStateException("Must specify either Port Name or Port Identifier to build Site-to-Site client");
             }
 
-            return new SocketClient(buildConfig());
+            switch (transportProtocol){
+                case RAW:
+                    return new SocketClient(buildConfig());
+                case HTTP:
+                    return new HttpClient(buildConfig());
+                default:
+                    throw new IllegalStateException("Transport protocol '" + transportProtocol + "' is not supported.");
+            }
         }
 
         /**
          * @return the configured URL for the remote NiFi instance
          */
         public String getUrl() {
-            return url;
+            if (urls != null && urls.size() > 0) {
+                return urls.iterator().next();
+            }
+            return null;
         }
 
         /**
@@ -669,58 +646,7 @@ public interface SiteToSiteClient extends Closeable {
          * @return the SSL Context that is configured for this builder
          */
         public SSLContext getSslContext() {
-            if (sslContext != null) {
-                return sslContext;
-            }
-
-            final KeyManagerFactory keyManagerFactory;
-            if (keystoreFilename != null && keystorePass != null && keystoreType != null) {
-                try {
-                    // prepare the keystore
-                    final KeyStore keyStore = KeyStore.getInstance(getKeystoreType().name());
-                    try (final InputStream keyStoreStream = new FileInputStream(new File(getKeystoreFilename()))) {
-                        keyStore.load(keyStoreStream, getKeystorePass().toCharArray());
-                    }
-                    keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-                    keyManagerFactory.init(keyStore, getKeystorePass().toCharArray());
-                } catch (final Exception e) {
-                    throw new RuntimeException("Failed to load Keystore", e);
-                }
-            } else {
-                keyManagerFactory = null;
-            }
-
-            final TrustManagerFactory trustManagerFactory;
-            if (truststoreFilename != null && truststorePass != null && truststoreType != null) {
-                try {
-                    // prepare the truststore
-                    final KeyStore trustStore = KeyStore.getInstance(getTruststoreType().name());
-                    try (final InputStream trustStoreStream = new FileInputStream(new File(getTruststoreFilename()))) {
-                        trustStore.load(trustStoreStream, getTruststorePass().toCharArray());
-                    }
-                    trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-                    trustManagerFactory.init(trustStore);
-                } catch (final Exception e) {
-                    throw new RuntimeException("Failed to load Truststore", e);
-                }
-            } else {
-                trustManagerFactory = null;
-            }
-
-            if (keyManagerFactory != null || trustManagerFactory != null) {
-                try {
-                    // initialize the ssl context
-                    final SSLContext sslContext = SSLContext.getInstance("TLS");
-                    sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), new SecureRandom());
-                    sslContext.getDefaultSSLParameters().setNeedClientAuth(true);
-
-                    return sslContext;
-                } catch (final Exception e) {
-                    throw new RuntimeException("Created keystore and truststore but failed to initialize SSLContext");
-                }
-            } else {
-                return null;
-            }
+            return sslContext;
         }
 
         /**
@@ -748,6 +674,13 @@ public interface SiteToSiteClient extends Closeable {
         }
 
         /**
+         * @return the transport protocol to use, defaults to RAW
+         */
+        public SiteToSiteTransportProtocol getTransportProtocol(){
+            return transportProtocol;
+        }
+
+        /**
          * @return the name of the port that the client is to communicate with
          */
         public String getPortName() {
@@ -761,11 +694,272 @@ public interface SiteToSiteClient extends Closeable {
         public String getPortIdentifier() {
             return portIdentifier;
         }
+
+
+        /**
+         * Specify a HTTP proxy information to use with HTTP protocol of Site-to-Site communication.
+         * @param httpProxy HTTP proxy information
+         * @return the builder
+         */
+        public Builder httpProxy(final HttpProxy httpProxy) {
+            this.httpProxy = httpProxy;
+            return this;
+        }
+
+        public HttpProxy getHttpProxy() {
+            return httpProxy;
+        }
+
     }
 
 
-    public abstract class SerializableSiteToSiteClientConfig implements SiteToSiteClientConfig, Serializable {
+    class StandardSiteToSiteClientConfig implements SiteToSiteClientConfig, Serializable {
+
         private static final long serialVersionUID = 1L;
 
+        // This Set instance has to be initialized here to be serialized via Kryo.
+        private final Set<String> urls = new LinkedHashSet<>();
+        private final long timeoutNanos;
+        private final long penalizationNanos;
+        private final long idleExpirationNanos;
+        private final SSLContext sslContext;
+        private final String keystoreFilename;
+        private final String keystorePass;
+        private final KeystoreType keystoreType;
+        private final String truststoreFilename;
+        private final String truststorePass;
+        private final KeystoreType truststoreType;
+        private final EventReporter eventReporter;
+        private final File peerPersistenceFile;
+        private final boolean useCompression;
+        private final SiteToSiteTransportProtocol transportProtocol;
+        private final String portName;
+        private final String portIdentifier;
+        private final int batchCount;
+        private final long batchSize;
+        private final long batchNanos;
+        private final HttpProxy httpProxy;
+        private final InetAddress localAddress;
+
+        // some serialization frameworks require a default constructor
+        private StandardSiteToSiteClientConfig() {
+            this.timeoutNanos = 0;
+            this.penalizationNanos = 0;
+            this.idleExpirationNanos = 0;
+            this.sslContext = null;
+            this.keystoreFilename = null;
+            this.keystorePass = null;
+            this.keystoreType = null;
+            this.truststoreFilename = null;
+            this.truststorePass = null;
+            this.truststoreType = null;
+            this.eventReporter = null;
+            this.peerPersistenceFile = null;
+            this.useCompression = false;
+            this.portName = null;
+            this.portIdentifier = null;
+            this.batchCount = 0;
+            this.batchSize = 0;
+            this.batchNanos = 0;
+            this.transportProtocol = null;
+            this.httpProxy = null;
+            this.localAddress = null;
+        }
+
+        private StandardSiteToSiteClientConfig(final SiteToSiteClient.Builder builder) {
+            if (builder.urls != null) {
+                this.urls.addAll(builder.urls);
+            }
+            this.timeoutNanos = builder.timeoutNanos;
+            this.penalizationNanos = builder.penalizationNanos;
+            this.idleExpirationNanos = builder.idleExpirationNanos;
+            this.sslContext = builder.sslContext;
+            this.keystoreFilename = builder.keystoreFilename;
+            this.keystorePass = builder.keystorePass;
+            this.keystoreType = builder.keystoreType;
+            this.truststoreFilename = builder.truststoreFilename;
+            this.truststorePass = builder.truststorePass;
+            this.truststoreType = builder.truststoreType;
+            this.eventReporter = builder.eventReporter;
+            this.peerPersistenceFile = builder.peerPersistenceFile;
+            this.useCompression = builder.useCompression;
+            this.portName = builder.portName;
+            this.portIdentifier = builder.portIdentifier;
+            this.batchCount = builder.batchCount;
+            this.batchSize = builder.batchSize;
+            this.batchNanos = builder.batchNanos;
+            this.transportProtocol = builder.getTransportProtocol();
+            this.httpProxy = builder.getHttpProxy();
+            this.localAddress = builder.localAddress;
+        }
+
+        @Override
+        public boolean isUseCompression() {
+            return useCompression;
+        }
+
+        @Override
+        public String getUrl() {
+            if (urls != null && urls.size() > 0) {
+                return urls.iterator().next();
+            }
+            return null;
+        }
+
+        @Override
+        public Set<String> getUrls() {
+            return urls;
+        }
+
+        @Override
+        public long getTimeout(final TimeUnit timeUnit) {
+            return timeUnit.convert(timeoutNanos, TimeUnit.NANOSECONDS);
+        }
+
+        @Override
+        public long getIdleConnectionExpiration(final TimeUnit timeUnit) {
+            return timeUnit.convert(idleExpirationNanos, TimeUnit.NANOSECONDS);
+        }
+
+        @Override
+        public SSLContext getSslContext() {
+            if (sslContext != null) {
+                return sslContext;
+            }
+
+            final KeyManagerFactory keyManagerFactory;
+            if (keystoreFilename != null && keystorePass != null && keystoreType != null) {
+                try {
+                    // prepare the keystore
+                    final KeyStore keyStore = KeyStoreUtils.getKeyStore(getKeystoreType().name());
+                    try (final InputStream keyStoreStream = new FileInputStream(new File(getKeystoreFilename()))) {
+                        keyStore.load(keyStoreStream, keystorePass.toCharArray());
+                    }
+                    keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                    keyManagerFactory.init(keyStore, keystorePass.toCharArray());
+                } catch (final Exception e) {
+                    throw new IllegalStateException("Failed to load Keystore", e);
+                }
+            } else {
+                keyManagerFactory = null;
+            }
+
+            final TrustManagerFactory trustManagerFactory;
+            if (truststoreFilename != null && truststorePass != null && truststoreType != null) {
+                try {
+                    // prepare the truststore
+                    final KeyStore trustStore = KeyStoreUtils.getTrustStore(getTruststoreType().name());
+                    try (final InputStream trustStoreStream = new FileInputStream(new File(getTruststoreFilename()))) {
+                        trustStore.load(trustStoreStream, truststorePass.toCharArray());
+                    }
+                    trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                    trustManagerFactory.init(trustStore);
+                } catch (final Exception e) {
+                    throw new IllegalStateException("Failed to load Truststore", e);
+                }
+            } else {
+                trustManagerFactory = null;
+            }
+
+            if (keyManagerFactory != null && trustManagerFactory != null) {
+                try {
+                    // initialize the ssl context
+                    final SSLContext sslContext = SSLContext.getInstance("TLS");
+                    sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), new SecureRandom());
+                    sslContext.getDefaultSSLParameters().setNeedClientAuth(true);
+
+                    return sslContext;
+                } catch (final Exception e) {
+                    throw new IllegalStateException("Created keystore and truststore but failed to initialize SSLContext", e);
+                }
+            } else {
+                return null;
+            }
+        }
+
+        @Override
+        public String getPortName() {
+            return portName;
+        }
+
+        @Override
+        public String getPortIdentifier() {
+            return portIdentifier;
+        }
+
+        @Override
+        public long getPenalizationPeriod(final TimeUnit timeUnit) {
+            return timeUnit.convert(penalizationNanos, TimeUnit.NANOSECONDS);
+        }
+
+        @Override
+        public File getPeerPersistenceFile() {
+            return peerPersistenceFile;
+        }
+
+        @Override
+        public EventReporter getEventReporter() {
+            return eventReporter;
+        }
+
+        @Override
+        public long getPreferredBatchDuration(final TimeUnit timeUnit) {
+            return timeUnit.convert(batchNanos, TimeUnit.NANOSECONDS);
+        }
+
+        @Override
+        public long getPreferredBatchSize() {
+            return batchSize;
+        }
+
+        @Override
+        public int getPreferredBatchCount() {
+            return batchCount;
+        }
+
+        @Override
+        public String getKeystoreFilename() {
+            return keystoreFilename;
+        }
+
+        @Override
+        public String getKeystorePassword() {
+            return keystorePass;
+        }
+
+        @Override
+        public KeystoreType getKeystoreType() {
+            return keystoreType;
+        }
+
+        @Override
+        public String getTruststoreFilename() {
+            return truststoreFilename;
+        }
+
+        @Override
+        public String getTruststorePassword() {
+            return truststorePass;
+        }
+
+        @Override
+        public KeystoreType getTruststoreType() {
+            return truststoreType;
+        }
+
+        @Override
+        public SiteToSiteTransportProtocol getTransportProtocol() {
+            return transportProtocol;
+        }
+
+        @Override
+        public HttpProxy getHttpProxy() {
+            return httpProxy;
+        }
+
+        @Override
+        public InetAddress getLocalAddress() {
+            return localAddress;
+        }
     }
 }

@@ -16,9 +16,12 @@
  */
 package org.apache.nifi.processors.standard;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -34,8 +37,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.avro.Schema;
@@ -48,15 +53,17 @@ import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
-import org.apache.nifi.annotation.behavior.SideEffectFree;
-import org.apache.nifi.annotation.behavior.TriggerWhenEmpty;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.ReadsAttribute;
 import org.apache.nifi.annotation.behavior.ReadsAttributes;
-import org.apache.nifi.annotation.documentation.SeeAlso;
-import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.annotation.behavior.SideEffectFree;
+import org.apache.nifi.annotation.behavior.TriggerWhenEmpty;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.behavior.WritesAttributes;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.SeeAlso;
+import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
@@ -64,6 +71,7 @@ import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
@@ -71,21 +79,19 @@ import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.InputStreamCallback;
 import org.apache.nifi.processor.io.OutputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.processors.standard.util.Bin;
-import org.apache.nifi.processors.standard.util.BinManager;
-import org.apache.nifi.processors.standard.util.FlowFileSessionWrapper;
-import org.apache.nifi.stream.io.BufferedInputStream;
-import org.apache.nifi.stream.io.BufferedOutputStream;
+import org.apache.nifi.processor.util.bin.Bin;
+import org.apache.nifi.processor.util.bin.BinFiles;
+import org.apache.nifi.processor.util.bin.BinManager;
 import org.apache.nifi.stream.io.NonCloseableOutputStream;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.FlowFilePackager;
 import org.apache.nifi.util.FlowFilePackagerV1;
 import org.apache.nifi.util.FlowFilePackagerV2;
 import org.apache.nifi.util.FlowFilePackagerV3;
-import org.apache.nifi.util.ObjectHolder;
 
 @SideEffectFree
 @TriggerWhenEmpty
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"merge", "content", "correlation", "tar", "zip", "stream", "concatenation", "archive", "flowfile-stream", "flowfile-stream-v3"})
 @CapabilityDescription("Merges a Group of FlowFiles together based on a user-defined strategy and packages them into a single FlowFile. "
         + "It is recommended that the Processor be configured with only a single incoming connection, as Group of FlowFiles will not be "
@@ -124,15 +130,15 @@ import org.apache.nifi.util.ObjectHolder;
 public class MergeContent extends BinFiles {
 
     // preferred attributes
-    public static final String FRAGMENT_ID_ATTRIBUTE = "fragment.identifier";
-    public static final String FRAGMENT_INDEX_ATTRIBUTE = "fragment.index";
-    public static final String FRAGMENT_COUNT_ATTRIBUTE = "fragment.count";
+    public static final String FRAGMENT_ID_ATTRIBUTE = FragmentAttributes.FRAGMENT_ID.key();
+    public static final String FRAGMENT_INDEX_ATTRIBUTE = FragmentAttributes.FRAGMENT_INDEX.key();
+    public static final String FRAGMENT_COUNT_ATTRIBUTE = FragmentAttributes.FRAGMENT_COUNT.key();
 
     // old style attributes
     public static final String SEGMENT_ID_ATTRIBUTE = "segment.identifier";
     public static final String SEGMENT_INDEX_ATTRIBUTE = "segment.index";
     public static final String SEGMENT_COUNT_ATTRIBUTE = "segment.count";
-    public static final String SEGMENT_ORIGINAL_FILENAME = "segment.original.filename";
+    public static final String SEGMENT_ORIGINAL_FILENAME = FragmentAttributes.SEGMENT_ORIGINAL_FILENAME.key();
 
     public static final AllowableValue MERGE_STRATEGY_BIN_PACK = new AllowableValue(
             "Bin-Packing Algorithm",
@@ -234,6 +240,7 @@ public class MergeContent extends BinFiles {
             .description("If specified, like FlowFiles will be binned together, where 'like FlowFiles' means FlowFiles that have the same value for "
                     + "this Attribute. If not specified, FlowFiles are bundled by the order in which they are pulled from the queue.")
             .required(false)
+            .expressionLanguageSupported(true)
             .addValidator(StandardValidators.ATTRIBUTE_KEY_VALIDATOR)
             .defaultValue(null)
             .build();
@@ -372,7 +379,8 @@ public class MergeContent extends BinFiles {
 
     @Override
     protected String getGroupId(final ProcessContext context, final FlowFile flowFile) {
-        final String correlationAttributeName = context.getProperty(CORRELATION_ATTRIBUTE_NAME).getValue();
+        final String correlationAttributeName = context.getProperty(CORRELATION_ATTRIBUTE_NAME)
+                .evaluateAttributeExpressions(flowFile).getValue();
         String groupId = correlationAttributeName == null ? null : flowFile.getAttribute(correlationAttributeName);
 
         // when MERGE_STRATEGY is Defragment and correlationAttributeName is null then bin by fragment.identifier
@@ -391,8 +399,7 @@ public class MergeContent extends BinFiles {
     }
 
     @Override
-    protected boolean processBin(final Bin unmodifiableBin, final List<FlowFileSessionWrapper> binCopy, final ProcessContext context,
-            final ProcessSession session) throws ProcessException {
+    protected boolean processBin(final Bin bin, final ProcessContext context) throws ProcessException {
 
         final String mergeFormat = context.getProperty(MERGE_FORMAT).getValue();
         MergeBin merger;
@@ -433,63 +440,62 @@ public class MergeContent extends BinFiles {
                 break;
         }
 
+        final List<FlowFile> contents = bin.getContents();
+        final ProcessSession binSession = bin.getSession();
+
         if (MERGE_STRATEGY_DEFRAGMENT.equals(context.getProperty(MERGE_STRATEGY).getValue())) {
-            final String error = getDefragmentValidationError(binCopy);
+            final String error = getDefragmentValidationError(bin.getContents());
 
             // Fail the flow files and commit them
             if (error != null) {
-                final String binDescription = binCopy.size() <= 10 ? binCopy.toString() : binCopy.size() + " FlowFiles";
+                final String binDescription = contents.size() <= 10 ? contents.toString() : contents.size() + " FlowFiles";
                 getLogger().error(error + "; routing {} to failure", new Object[]{binDescription});
-                for (final FlowFileSessionWrapper wrapper : binCopy) {
-                    wrapper.getSession().transfer(wrapper.getFlowFile(), REL_FAILURE);
-                    wrapper.getSession().commit();
-                }
+                binSession.transfer(contents, REL_FAILURE);
+                binSession.commit();
 
                 return true;
             }
-            Collections.sort(binCopy, new FragmentComparator());
+
+            Collections.sort(contents, new FragmentComparator());
         }
 
-        FlowFile bundle = merger.merge(context, session, binCopy);
+        FlowFile bundle = merger.merge(bin, context);
 
         // keep the filename, as it is added to the bundle.
         final String filename = bundle.getAttribute(CoreAttributes.FILENAME.key());
 
         // merge all of the attributes
-        final Map<String, String> bundleAttributes = attributeStrategy.getMergedAttributes(binCopy);
+        final Map<String, String> bundleAttributes = attributeStrategy.getMergedAttributes(contents);
         bundleAttributes.put(CoreAttributes.MIME_TYPE.key(), merger.getMergedContentType());
         // restore the filename of the bundle
         bundleAttributes.put(CoreAttributes.FILENAME.key(), filename);
-        bundleAttributes.put(MERGE_COUNT_ATTRIBUTE, Integer.toString(binCopy.size()));
-        bundleAttributes.put(MERGE_BIN_AGE_ATTRIBUTE, Long.toString(unmodifiableBin.getBinAge()));
+        bundleAttributes.put(MERGE_COUNT_ATTRIBUTE, Integer.toString(contents.size()));
+        bundleAttributes.put(MERGE_BIN_AGE_ATTRIBUTE, Long.toString(bin.getBinAge()));
 
-        bundle = session.putAllAttributes(bundle, bundleAttributes);
+        bundle = binSession.putAllAttributes(bundle, bundleAttributes);
 
-        final String inputDescription = binCopy.size() < 10 ? binCopy.toString() : binCopy.size() + " FlowFiles";
+        final String inputDescription = contents.size() < 10 ? contents.toString() : contents.size() + " FlowFiles";
         getLogger().info("Merged {} into {}", new Object[]{inputDescription, bundle});
-        session.transfer(bundle, REL_MERGED);
+        binSession.transfer(bundle, REL_MERGED);
 
-        for (final FlowFileSessionWrapper unmerged : merger.getUnmergedFlowFiles()) {
-            final ProcessSession unmergedSession = unmerged.getSession();
-            final FlowFile unmergedCopy = unmergedSession.clone(unmerged.getFlowFile());
-            unmergedSession.transfer(unmergedCopy, REL_FAILURE);
+        for (final FlowFile unmerged : merger.getUnmergedFlowFiles()) {
+            final FlowFile unmergedCopy = binSession.clone(unmerged);
+            binSession.transfer(unmergedCopy, REL_FAILURE);
         }
 
         // We haven't committed anything, parent will take care of it
         return false;
     }
 
-    private String getDefragmentValidationError(final List<FlowFileSessionWrapper> bin) {
-        if (bin.isEmpty()) {
+    private String getDefragmentValidationError(final List<FlowFile> binContents) {
+        if (binContents.isEmpty()) {
             return null;
         }
 
         // If we are defragmenting, all fragments must have the appropriate attributes.
         String decidedFragmentCount = null;
         String fragmentIdentifier = null;
-        for (final FlowFileSessionWrapper flowFileWrapper : bin) {
-            final FlowFile flowFile = flowFileWrapper.getFlowFile();
-
+        for (final FlowFile flowFile : binContents) {
             final String fragmentIndex = flowFile.getAttribute(FRAGMENT_INDEX_ATTRIBUTE);
             if (!isNumber(fragmentIndex)) {
                 return "Cannot Defragment " + flowFile + " because it does not have an integer value for the " + FRAGMENT_INDEX_ATTRIBUTE + " attribute";
@@ -515,14 +521,14 @@ public class MergeContent extends BinFiles {
             return "Cannot Defragment FlowFiles with Fragment Identifier " + fragmentIdentifier + " because the " + FRAGMENT_COUNT_ATTRIBUTE + " has a non-integer value of " + decidedFragmentCount;
         }
 
-        if (bin.size() < numericFragmentCount) {
+        if (binContents.size() < numericFragmentCount) {
             return "Cannot Defragment FlowFiles with Fragment Identifier " + fragmentIdentifier + " because the expected number of fragments is " + decidedFragmentCount + " but found only "
-                    + bin.size() + " fragments";
+                + binContents.size() + " fragments";
         }
 
-        if (bin.size() > numericFragmentCount) {
+        if (binContents.size() > numericFragmentCount) {
             return "Cannot Defragment FlowFiles with Fragment Identifier " + fragmentIdentifier + " because the expected number of fragments is " + decidedFragmentCount + " but found "
-                    + bin.size() + " fragments for this identifier";
+                + binContents.size() + " fragments for this identifier";
         }
 
         return null;
@@ -544,27 +550,25 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public FlowFile merge(final ProcessContext context, final ProcessSession session, final List<FlowFileSessionWrapper> wrappers) {
-            final Set<FlowFile> parentFlowFiles = new HashSet<>();
-            for (final FlowFileSessionWrapper wrapper : wrappers) {
-                parentFlowFiles.add(wrapper.getFlowFile());
-            }
+        public FlowFile merge(final Bin bin, final ProcessContext context) {
+            final List<FlowFile> contents = bin.getContents();
 
-            FlowFile bundle = session.create(parentFlowFiles);
-            final ObjectHolder<String> bundleMimeTypeRef = new ObjectHolder<>(null);
+            final ProcessSession session = bin.getSession();
+            FlowFile bundle = session.create(bin.getContents());
+            final AtomicReference<String> bundleMimeTypeRef = new AtomicReference<>(null);
             bundle = session.write(bundle, new OutputStreamCallback() {
                 @Override
                 public void process(final OutputStream out) throws IOException {
-                    final byte[] header = getDelimiterContent(context, wrappers, HEADER);
+                    final byte[] header = getDelimiterContent(context, contents, HEADER);
                     if (header != null) {
                         out.write(header);
                     }
 
                     boolean isFirst = true;
-                    final Iterator<FlowFileSessionWrapper> itr = wrappers.iterator();
+                    final Iterator<FlowFile> itr = contents.iterator();
                     while (itr.hasNext()) {
-                        final FlowFileSessionWrapper wrapper = itr.next();
-                        wrapper.getSession().read(wrapper.getFlowFile(), new InputStreamCallback() {
+                        final FlowFile flowFile = itr.next();
+                        bin.getSession().read(flowFile, false, new InputStreamCallback() {
                             @Override
                             public void process(final InputStream in) throws IOException {
                                 StreamUtils.copy(in, out);
@@ -572,13 +576,13 @@ public class MergeContent extends BinFiles {
                         });
 
                         if (itr.hasNext()) {
-                            final byte[] demarcator = getDelimiterContent(context, wrappers, DEMARCATOR);
+                            final byte[] demarcator = getDelimiterContent(context, contents, DEMARCATOR);
                             if (demarcator != null) {
                                 out.write(demarcator);
                             }
                         }
 
-                        final String flowFileMimeType = wrapper.getFlowFile().getAttribute(CoreAttributes.MIME_TYPE.key());
+                        final String flowFileMimeType = flowFile.getAttribute(CoreAttributes.MIME_TYPE.key());
                         if (isFirst) {
                             bundleMimeTypeRef.set(flowFileMimeType);
                             isFirst = false;
@@ -589,15 +593,15 @@ public class MergeContent extends BinFiles {
                         }
                     }
 
-                    final byte[] footer = getDelimiterContent(context, wrappers, FOOTER);
+                    final byte[] footer = getDelimiterContent(context, contents, FOOTER);
                     if (footer != null) {
                         out.write(footer);
                     }
                 }
             });
 
-            session.getProvenanceReporter().join(getFlowFiles(wrappers), bundle);
-            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(wrappers));
+            session.getProvenanceReporter().join(contents, bundle);
+            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(contents));
             if (bundleMimeTypeRef.get() != null) {
                 this.mimeType = bundleMimeTypeRef.get();
             }
@@ -605,8 +609,7 @@ public class MergeContent extends BinFiles {
             return bundle;
         }
 
-        private byte[] getDelimiterContent(final ProcessContext context, final List<FlowFileSessionWrapper> wrappers, final PropertyDescriptor descriptor)
-                throws IOException {
+        private byte[] getDelimiterContent(final ProcessContext context, final List<FlowFile> wrappers, final PropertyDescriptor descriptor) throws IOException {
             final String delimiterStrategyValue = context.getProperty(DELIMITER_STRATEGY).getValue();
             if (DELIMITER_STRATEGY_FILENAME.equals(delimiterStrategyValue)) {
                 return getDelimiterFileContent(context, wrappers, descriptor);
@@ -615,36 +618,30 @@ public class MergeContent extends BinFiles {
             }
         }
 
-        private byte[] getDelimiterFileContent(final ProcessContext context, final List<FlowFileSessionWrapper> wrappers, final PropertyDescriptor descriptor)
+        private byte[] getDelimiterFileContent(final ProcessContext context, final List<FlowFile> flowFiles, final PropertyDescriptor descriptor)
                 throws IOException {
             byte[] property = null;
             final String descriptorValue = context.getProperty(descriptor).evaluateAttributeExpressions().getValue();
-            if (descriptorValue != null && wrappers != null && wrappers.size() > 0) {
-                final String content = new String(readContent(descriptorValue));
-                final FlowFileSessionWrapper wrapper = wrappers.get(0);
-                if (wrapper != null && content != null) {
-                    final FlowFile flowFile = wrapper.getFlowFile();
-                    if (flowFile != null) {
-                        final PropertyValue propVal = context.newPropertyValue(content).evaluateAttributeExpressions(flowFile);
-                        property = propVal.getValue().getBytes();
-                    }
+            if (descriptorValue != null && flowFiles != null && flowFiles.size() > 0) {
+                final String content = new String(readContent(descriptorValue), StandardCharsets.UTF_8);
+                final FlowFile flowFile = flowFiles.get(0);
+                if (flowFile != null && content != null) {
+                    final PropertyValue propVal = context.newPropertyValue(content).evaluateAttributeExpressions(flowFile);
+                    property = propVal.getValue().getBytes(StandardCharsets.UTF_8);
                 }
             }
             return property;
         }
 
-        private byte[] getDelimiterTextContent(final ProcessContext context, final List<FlowFileSessionWrapper> wrappers, final PropertyDescriptor descriptor)
+        private byte[] getDelimiterTextContent(final ProcessContext context, final List<FlowFile> flowFiles, final PropertyDescriptor descriptor)
                 throws IOException {
             byte[] property = null;
-            if (wrappers != null && wrappers.size() > 0) {
-                final FlowFileSessionWrapper wrapper = wrappers.get(0);
-                if (wrapper != null) {
-                    final FlowFile flowFile = wrapper.getFlowFile();
-                    if (flowFile != null) {
-                        final String value = context.getProperty(descriptor).evaluateAttributeExpressions(flowFile).getValue();
-                        if (value != null) {
-                            property = value.getBytes();
-                        }
+            if (flowFiles != null && flowFiles.size() > 0) {
+                final FlowFile flowFile = flowFiles.get(0);
+                if (flowFile != null) {
+                    final String value = context.getProperty(descriptor).evaluateAttributeExpressions(flowFile).getValue();
+                    if (value != null) {
+                        property = value.getBytes(StandardCharsets.UTF_8);
                     }
                 }
             }
@@ -657,18 +654,11 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public List<FlowFileSessionWrapper> getUnmergedFlowFiles() {
+        public List<FlowFile> getUnmergedFlowFiles() {
             return Collections.emptyList();
         }
     }
 
-    private List<FlowFile> getFlowFiles(final List<FlowFileSessionWrapper> sessionWrappers) {
-        final List<FlowFile> flowFiles = new ArrayList<>();
-        for (final FlowFileSessionWrapper wrapper : sessionWrappers) {
-            flowFiles.add(wrapper.getFlowFile());
-        }
-        return flowFiles;
-    }
 
     private String getPath(final FlowFile flowFile) {
         Path path = Paths.get(flowFile.getAttribute(CoreAttributes.PATH.key()));
@@ -683,11 +673,11 @@ public class MergeContent extends BinFiles {
         return path == null ? "" : path.toString() + "/";
     }
 
-    private String createFilename(final List<FlowFileSessionWrapper> wrappers) {
-        if (wrappers.size() == 1) {
-            return wrappers.get(0).getFlowFile().getAttribute(CoreAttributes.FILENAME.key());
+    private String createFilename(final List<FlowFile> flowFiles) {
+        if (flowFiles.size() == 1) {
+            return flowFiles.get(0).getAttribute(CoreAttributes.FILENAME.key());
         } else {
-            final FlowFile ff = wrappers.get(0).getFlowFile();
+            final FlowFile ff = flowFiles.get(0);
             final String origFilename = ff.getAttribute(SEGMENT_ORIGINAL_FILENAME);
             if (origFilename != null) {
                 return origFilename;
@@ -700,20 +690,21 @@ public class MergeContent extends BinFiles {
     private class TarMerge implements MergeBin {
 
         @Override
-        public FlowFile merge(final ProcessContext context, final ProcessSession session, final List<FlowFileSessionWrapper> wrappers) {
+        public FlowFile merge(final Bin bin, final ProcessContext context) {
+            final List<FlowFile> contents = bin.getContents();
+            final ProcessSession session = bin.getSession();
+
             final boolean keepPath = context.getProperty(KEEP_PATH).asBoolean();
             FlowFile bundle = session.create(); // we don't pass the parents to the #create method because the parents belong to different sessions
 
-            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(wrappers) + ".tar");
+            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(contents) + ".tar");
             bundle = session.write(bundle, new OutputStreamCallback() {
                 @Override
                 public void process(final OutputStream rawOut) throws IOException {
                     try (final OutputStream bufferedOut = new BufferedOutputStream(rawOut);
                             final TarArchiveOutputStream out = new TarArchiveOutputStream(bufferedOut)) {
                         out.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU);
-                        for (final FlowFileSessionWrapper wrapper : wrappers) {
-                            final FlowFile flowFile = wrapper.getFlowFile();
-
+                        for (final FlowFile flowFile : contents) {
                             final String path = keepPath ? getPath(flowFile) : "";
                             final String entryName = path + flowFile.getAttribute(CoreAttributes.FILENAME.key());
 
@@ -731,14 +722,14 @@ public class MergeContent extends BinFiles {
 
                             out.putArchiveEntry(tarEntry);
 
-                            wrapper.getSession().exportTo(flowFile, out);
+                            bin.getSession().exportTo(flowFile, out);
                             out.closeArchiveEntry();
                         }
                     }
                 }
             });
 
-            session.getProvenanceReporter().join(getFlowFiles(wrappers), bundle);
+            bin.getSession().getProvenanceReporter().join(contents, bundle);
             return bundle;
         }
 
@@ -748,7 +739,7 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public List<FlowFileSessionWrapper> getUnmergedFlowFiles() {
+        public List<FlowFile> getUnmergedFlowFiles() {
             return Collections.emptyList();
         }
     }
@@ -764,8 +755,11 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public FlowFile merge(final ProcessContext context, final ProcessSession session, final List<FlowFileSessionWrapper> wrappers) {
-            FlowFile bundle = session.create(); // we don't pass the parents to the #create method because the parents belong to different sessions
+        public FlowFile merge(final Bin bin, final ProcessContext context) {
+            final ProcessSession session = bin.getSession();
+            final List<FlowFile> contents = bin.getContents();
+
+            FlowFile bundle = session.create(contents);
 
             bundle = session.write(bundle, new OutputStreamCallback() {
                 @Override
@@ -775,9 +769,8 @@ public class MergeContent extends BinFiles {
                         // closed, which in turn closes the underlying OutputStream, and we want to protect ourselves against that.
                         final OutputStream out = new NonCloseableOutputStream(bufferedOut);
 
-                        for (final FlowFileSessionWrapper wrapper : wrappers) {
-                            final FlowFile flowFile = wrapper.getFlowFile();
-                            wrapper.getSession().read(flowFile, new InputStreamCallback() {
+                        for (final FlowFile flowFile : contents) {
+                            bin.getSession().read(flowFile, false, new InputStreamCallback() {
                                 @Override
                                 public void process(final InputStream rawIn) throws IOException {
                                     try (final InputStream in = new BufferedInputStream(rawIn)) {
@@ -789,7 +782,6 @@ public class MergeContent extends BinFiles {
                                         if (attributes.containsKey(CoreAttributes.MIME_TYPE.key())) {
                                             attributes.put("content-type", attributes.get(CoreAttributes.MIME_TYPE.key()));
                                         }
-
                                         packager.packageFlowFile(in, out, attributes, flowFile.getSize());
                                     }
                                 }
@@ -799,8 +791,8 @@ public class MergeContent extends BinFiles {
                 }
             });
 
-            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(wrappers) + ".pkg");
-            session.getProvenanceReporter().join(getFlowFiles(wrappers), bundle);
+            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(contents) + ".pkg");
+            session.getProvenanceReporter().join(contents, bundle);
             return bundle;
         }
 
@@ -810,7 +802,7 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public List<FlowFileSessionWrapper> getUnmergedFlowFiles() {
+        public List<FlowFile> getUnmergedFlowFiles() {
             return Collections.emptyList();
         }
     }
@@ -819,34 +811,43 @@ public class MergeContent extends BinFiles {
 
         private final int compressionLevel;
 
+        private List<FlowFile> unmerged = new ArrayList<>();
+
         public ZipMerge(final int compressionLevel) {
             this.compressionLevel = compressionLevel;
         }
 
         @Override
-        public FlowFile merge(final ProcessContext context, final ProcessSession session, final List<FlowFileSessionWrapper> wrappers) {
+        public FlowFile merge(final Bin bin, final ProcessContext context) {
             final boolean keepPath = context.getProperty(KEEP_PATH).asBoolean();
 
-            FlowFile bundle = session.create(); // we don't pass the parents to the #create method because the parents belong to different sessions
+            final ProcessSession session = bin.getSession();
+            final List<FlowFile> contents = bin.getContents();
+            unmerged.addAll(contents);
 
-            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(wrappers) + ".zip");
+            FlowFile bundle = session.create(contents);
+
+            bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(contents) + ".zip");
             bundle = session.write(bundle, new OutputStreamCallback() {
                 @Override
                 public void process(final OutputStream rawOut) throws IOException {
                     try (final OutputStream bufferedOut = new BufferedOutputStream(rawOut);
                             final ZipOutputStream out = new ZipOutputStream(bufferedOut)) {
                         out.setLevel(compressionLevel);
-                        for (final FlowFileSessionWrapper wrapper : wrappers) {
-                            final FlowFile flowFile = wrapper.getFlowFile();
-
+                        for (final FlowFile flowFile : contents) {
                             final String path = keepPath ? getPath(flowFile) : "";
                             final String entryName = path + flowFile.getAttribute(CoreAttributes.FILENAME.key());
                             final ZipEntry zipEntry = new ZipEntry(entryName);
                             zipEntry.setSize(flowFile.getSize());
-                            out.putNextEntry(zipEntry);
+                            try {
+                                out.putNextEntry(zipEntry);
 
-                            wrapper.getSession().exportTo(flowFile, out);
-                            out.closeEntry();
+                                bin.getSession().exportTo(flowFile, out);
+                                out.closeEntry();
+                                unmerged.remove(flowFile);
+                            } catch (ZipException e) {
+                                getLogger().error("Encountered exception merging {}", new Object[]{flowFile}, e);
+                            }
                         }
 
                         out.finish();
@@ -855,7 +856,7 @@ public class MergeContent extends BinFiles {
                 }
             });
 
-            session.getProvenanceReporter().join(getFlowFiles(wrappers), bundle);
+            session.getProvenanceReporter().join(contents, bundle);
             return bundle;
         }
 
@@ -865,32 +866,33 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public List<FlowFileSessionWrapper> getUnmergedFlowFiles() {
-            return Collections.emptyList();
+        public List<FlowFile> getUnmergedFlowFiles() {
+            return unmerged;
         }
     }
 
     private class AvroMerge implements MergeBin {
 
-        private List<FlowFileSessionWrapper> unmerged = new ArrayList<>();
+        private List<FlowFile> unmerged = new ArrayList<>();
 
         @Override
-        public FlowFile merge(ProcessContext context, final ProcessSession session, final List<FlowFileSessionWrapper> wrappers) {
+        public FlowFile merge(final Bin bin, final ProcessContext context) {
+            final ProcessSession session = bin.getSession();
+            final List<FlowFile> contents = bin.getContents();
 
             final Map<String, byte[]> metadata = new TreeMap<>();
-            final ObjectHolder<Schema> schema = new ObjectHolder<>(null);
-            final ObjectHolder<String> inputCodec = new ObjectHolder<>(null);
+            final AtomicReference<Schema> schema = new AtomicReference<>(null);
+            final AtomicReference<String> inputCodec = new AtomicReference<>(null);
             final DataFileWriter<GenericRecord> writer = new DataFileWriter<>(new GenericDatumWriter<GenericRecord>());
 
             // we don't pass the parents to the #create method because the parents belong to different sessions
-            FlowFile bundle = session.create();
+            FlowFile bundle = session.create(contents);
             bundle = session.write(bundle, new OutputStreamCallback() {
                 @Override
                 public void process(final OutputStream rawOut) throws IOException {
                     try (final OutputStream out = new BufferedOutputStream(rawOut)) {
-                        for (final FlowFileSessionWrapper wrapper : wrappers) {
-                            final FlowFile flowFile = wrapper.getFlowFile();
-                            wrapper.getSession().read(flowFile, new InputStreamCallback() {
+                        for (final FlowFile flowFile : contents) {
+                            bin.getSession().read(flowFile, false, new InputStreamCallback() {
                                 @Override
                                 public void process(InputStream in) throws IOException {
                                     boolean canMerge = true;
@@ -919,7 +921,7 @@ public class MergeContent extends BinFiles {
                                                 getLogger().debug("Input file {} has different schema - {}, not merging",
                                                         new Object[]{flowFile.getId(), reader.getSchema().getName()});
                                                 canMerge = false;
-                                                unmerged.add(wrapper);
+                                                unmerged.add(flowFile);
                                             }
 
                                             // check that we're appending to the same metadata
@@ -931,7 +933,7 @@ public class MergeContent extends BinFiles {
                                                         getLogger().debug("Input file {} has different non-reserved metadata, not merging",
                                                                 new Object[]{flowFile.getId()});
                                                         canMerge = false;
-                                                        unmerged.add(wrapper);
+                                                        unmerged.add(flowFile);
                                                     }
                                                 }
                                             }
@@ -945,7 +947,7 @@ public class MergeContent extends BinFiles {
                                                 getLogger().debug("Input file {} has different codec, not merging",
                                                         new Object[]{flowFile.getId()});
                                                 canMerge = false;
-                                                unmerged.add(wrapper);
+                                                unmerged.add(flowFile);
                                             }
                                         }
 
@@ -964,7 +966,15 @@ public class MergeContent extends BinFiles {
                 }
             });
 
-            session.getProvenanceReporter().join(getFlowFiles(wrappers), bundle);
+            final Collection<FlowFile> parents;
+            if (unmerged.isEmpty()) {
+                parents = contents;
+            } else {
+                parents = new HashSet<>(contents);
+                parents.removeAll(unmerged);
+            }
+
+            session.getProvenanceReporter().join(parents, bundle);
             return bundle;
         }
 
@@ -974,7 +984,7 @@ public class MergeContent extends BinFiles {
         }
 
         @Override
-        public List<FlowFileSessionWrapper> getUnmergedFlowFiles() {
+        public List<FlowFile> getUnmergedFlowFiles() {
             return unmerged;
         }
     }
@@ -982,13 +992,11 @@ public class MergeContent extends BinFiles {
     private static class KeepUniqueAttributeStrategy implements AttributeStrategy {
 
         @Override
-        public Map<String, String> getMergedAttributes(final List<FlowFileSessionWrapper> flowFiles) {
+        public Map<String, String> getMergedAttributes(final List<FlowFile> flowFiles) {
             final Map<String, String> newAttributes = new HashMap<>();
             final Set<String> conflicting = new HashSet<>();
 
-            for (final FlowFileSessionWrapper wrapper : flowFiles) {
-                final FlowFile flowFile = wrapper.getFlowFile();
-
+            for (final FlowFile flowFile : flowFiles) {
                 for (final Map.Entry<String, String> attributeEntry : flowFile.getAttributes().entrySet()) {
                     final String name = attributeEntry.getKey();
                     final String value = attributeEntry.getValue();
@@ -1015,29 +1023,29 @@ public class MergeContent extends BinFiles {
     private static class KeepCommonAttributeStrategy implements AttributeStrategy {
 
         @Override
-        public Map<String, String> getMergedAttributes(final List<FlowFileSessionWrapper> flowFiles) {
+        public Map<String, String> getMergedAttributes(final List<FlowFile> flowFiles) {
             final Map<String, String> result = new HashMap<>();
 
             //trivial cases
             if (flowFiles == null || flowFiles.isEmpty()) {
                 return result;
             } else if (flowFiles.size() == 1) {
-                result.putAll(flowFiles.iterator().next().getFlowFile().getAttributes());
+                result.putAll(flowFiles.iterator().next().getAttributes());
             }
 
             /*
              * Start with the first attribute map and only put an entry to the
              * resultant map if it is common to every map.
              */
-            final Map<String, String> firstMap = flowFiles.iterator().next().getFlowFile().getAttributes();
+            final Map<String, String> firstMap = flowFiles.iterator().next().getAttributes();
 
             outer:
             for (final Map.Entry<String, String> mapEntry : firstMap.entrySet()) {
                 final String key = mapEntry.getKey();
                 final String value = mapEntry.getValue();
 
-                for (final FlowFileSessionWrapper flowFileWrapper : flowFiles) {
-                    final Map<String, String> currMap = flowFileWrapper.getFlowFile().getAttributes();
+                for (final FlowFile flowFile : flowFiles) {
+                    final Map<String, String> currMap = flowFile.getAttributes();
                     final String curVal = currMap.get(key);
                     if (curVal == null || !curVal.equals(value)) {
                         continue outer;
@@ -1052,27 +1060,27 @@ public class MergeContent extends BinFiles {
         }
     }
 
-    private static class FragmentComparator implements Comparator<FlowFileSessionWrapper> {
+    private static class FragmentComparator implements Comparator<FlowFile> {
 
         @Override
-        public int compare(final FlowFileSessionWrapper o1, final FlowFileSessionWrapper o2) {
-            final int fragmentIndex1 = Integer.parseInt(o1.getFlowFile().getAttribute(FRAGMENT_INDEX_ATTRIBUTE));
-            final int fragmentIndex2 = Integer.parseInt(o2.getFlowFile().getAttribute(FRAGMENT_INDEX_ATTRIBUTE));
+        public int compare(final FlowFile o1, final FlowFile o2) {
+            final int fragmentIndex1 = Integer.parseInt(o1.getAttribute(FRAGMENT_INDEX_ATTRIBUTE));
+            final int fragmentIndex2 = Integer.parseInt(o2.getAttribute(FRAGMENT_INDEX_ATTRIBUTE));
             return Integer.compare(fragmentIndex1, fragmentIndex2);
         }
     }
 
     private interface MergeBin {
 
-        FlowFile merge(ProcessContext context, ProcessSession session, List<FlowFileSessionWrapper> flowFiles);
+        FlowFile merge(Bin bin, ProcessContext context);
 
         String getMergedContentType();
 
-        List<FlowFileSessionWrapper> getUnmergedFlowFiles();
+        List<FlowFile> getUnmergedFlowFiles();
     }
 
     private interface AttributeStrategy {
 
-        Map<String, String> getMergedAttributes(List<FlowFileSessionWrapper> flowFiles);
+        Map<String, String> getMergedAttributes(List<FlowFile> flowFiles);
     }
 }

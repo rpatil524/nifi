@@ -27,41 +27,52 @@ import com.sun.jersey.api.client.UniformInterfaceException;
 import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.api.client.config.ClientConfig;
 import com.sun.jersey.api.client.config.DefaultClientConfig;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.framework.security.util.SslContextFactory;
+import org.apache.nifi.security.util.KeyStoreUtils;
+import org.apache.nifi.util.FormatUtils;
+import org.apache.nifi.util.NiFiProperties;
+import org.apache.nifi.web.security.x509.ocsp.OcspStatus.ValidationStatus;
+import org.apache.nifi.web.security.x509.ocsp.OcspStatus.VerificationStatus;
+import org.apache.nifi.web.util.WebUtils;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.ocsp.OCSPObjectIdentifiers;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.Extensions;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.ocsp.BasicOCSPResp;
+import org.bouncycastle.cert.ocsp.CertificateID;
+import org.bouncycastle.cert.ocsp.CertificateStatus;
+import org.bouncycastle.cert.ocsp.OCSPException;
+import org.bouncycastle.cert.ocsp.OCSPReq;
+import org.bouncycastle.cert.ocsp.OCSPReqBuilder;
+import org.bouncycastle.cert.ocsp.OCSPResp;
+import org.bouncycastle.cert.ocsp.OCSPRespBuilder;
+import org.bouncycastle.cert.ocsp.RevokedStatus;
+import org.bouncycastle.cert.ocsp.SingleResp;
+import org.bouncycastle.operator.DigestCalculatorProvider;
+import org.bouncycastle.operator.OperatorCreationException;
+import org.bouncycastle.operator.jcajce.JcaContentVerifierProviderBuilder;
+import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
+import javax.security.auth.x500.X500Principal;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.URI;
 import java.security.KeyStore;
-import java.security.NoSuchProviderException;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
-import javax.security.auth.x500.X500Principal;
-import javax.servlet.http.HttpServletRequest;
-import org.apache.nifi.framework.security.util.SslContextFactory;
-import org.apache.nifi.web.security.x509.ocsp.OcspStatus.ValidationStatus;
-import org.apache.nifi.web.security.x509.ocsp.OcspStatus.VerificationStatus;
-import org.apache.nifi.util.FormatUtils;
-import org.apache.nifi.util.NiFiProperties;
-import org.apache.nifi.web.util.WebUtils;
-import org.apache.commons.lang3.StringUtils;
-import org.bouncycastle.ocsp.BasicOCSPResp;
-import org.bouncycastle.ocsp.CertificateID;
-import org.bouncycastle.ocsp.CertificateStatus;
-import org.bouncycastle.ocsp.OCSPException;
-import org.bouncycastle.ocsp.OCSPReq;
-import org.bouncycastle.ocsp.OCSPReqGenerator;
-import org.bouncycastle.ocsp.OCSPResp;
-import org.bouncycastle.ocsp.OCSPRespStatus;
-import org.bouncycastle.ocsp.RevokedStatus;
-import org.bouncycastle.ocsp.SingleResp;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class OcspCertificateValidator {
 
@@ -90,7 +101,7 @@ public class OcspCertificateValidator {
                 // attempt to parse the specified va url
                 validationAuthorityURI = URI.create(rawValidationAuthorityUrl);
 
-                // connection detials
+                // connection details
                 final ClientConfig config = new DefaultClientConfig();
                 config.getProperties().put(ClientConfig.PROPERTY_READ_TIMEOUT, READ_TIMEOUT);
                 config.getProperties().put(ClientConfig.PROPERTY_CONNECT_TIMEOUT, CONNECT_TIMEOUT);
@@ -111,9 +122,8 @@ public class OcspCertificateValidator {
                     trustedCAs.put(ocspCertificate.getSubjectX500Principal().getName(), ocspCertificate);
                 }
 
-                // determine how long to cache the ocsp responses for
-                final String rawCacheDurationDuration = properties.getUserCredentialCacheDuration();
-                final long cacheDurationMillis = FormatUtils.getTimeDuration(rawCacheDurationDuration, TimeUnit.MILLISECONDS);
+                // TODO - determine how long to cache the ocsp responses for
+                final long cacheDurationMillis = FormatUtils.getTimeDuration("12 hours", TimeUnit.MILLISECONDS);
 
                 // build the ocsp cache
                 ocspCache = CacheBuilder.newBuilder().expireAfterWrite(cacheDurationMillis, TimeUnit.MILLISECONDS).build(new CacheLoader<OcspRequest, OcspStatus>() {
@@ -158,8 +168,7 @@ public class OcspCertificateValidator {
     }
 
     /**
-     * Loads the trusted certificate authorities according to the specified
-     * properties.
+     * Loads the trusted certificate authorities according to the specified properties.
      *
      * @param properties properties
      * @return map of certificate authorities
@@ -184,7 +193,7 @@ public class OcspCertificateValidator {
 
         // load the configured truststore
         try (final FileInputStream fis = new FileInputStream(truststorePath)) {
-            final KeyStore truststore = KeyStore.getInstance(KeyStore.getDefaultType());
+            final KeyStore truststore = KeyStoreUtils.getTrustStore(KeyStore.getDefaultType());
             truststore.load(fis, truststorePassword);
 
             TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
@@ -208,12 +217,10 @@ public class OcspCertificateValidator {
     /**
      * Validates the specified certificate using OCSP if configured.
      *
-     * @param request http request
+     * @param certificates the client certificates
      * @throws CertificateStatusException ex
      */
-    public void validate(final HttpServletRequest request) throws CertificateStatusException {
-        final X509Certificate[] certificates = (X509Certificate[]) request.getAttribute("javax.servlet.request.X509Certificate");
-
+    public void validate(final X509Certificate[] certificates) throws CertificateStatusException {
         // only validate if configured to do so
         if (client != null && certificates != null && certificates.length > 0) {
             final X509Certificate subjectCertificate = getSubjectCertificate(certificates);
@@ -287,16 +294,24 @@ public class OcspCertificateValidator {
         try {
             // prepare the request
             final BigInteger subjectSerialNumber = subjectCertificate.getSerialNumber();
-            final CertificateID certificateId = new CertificateID(CertificateID.HASH_SHA1, issuerCertificate, subjectSerialNumber);
+            final DigestCalculatorProvider calculatorProviderBuilder = new JcaDigestCalculatorProviderBuilder().setProvider("BC").build();
+            final CertificateID certificateId = new CertificateID(calculatorProviderBuilder.get(CertificateID.HASH_SHA1),
+                    new X509CertificateHolder(issuerCertificate.getEncoded()),
+                    subjectSerialNumber);
 
             // generate the request
-            final OCSPReqGenerator requestGenerator = new OCSPReqGenerator();
+            final OCSPReqBuilder requestGenerator = new OCSPReqBuilder();
             requestGenerator.addRequest(certificateId);
-            final OCSPReq ocspRequest = requestGenerator.generate();
+
+            // Create a nonce to avoid replay attack
+            BigInteger nonce = BigInteger.valueOf(System.currentTimeMillis());
+            Extension ext = new Extension(OCSPObjectIdentifiers.id_pkix_ocsp_nonce, true, new DEROctetString(nonce.toByteArray()));
+            requestGenerator.setRequestExtensions(new Extensions(new Extension[]{ext}));
+
+            final OCSPReq ocspRequest = requestGenerator.build();
 
             // perform the request
-            final WebResource resource = client.resource(validationAuthorityURI);
-            final ClientResponse response = resource.header(CONTENT_TYPE_HEADER, OCSP_REQUEST_CONTENT_TYPE).post(ClientResponse.class, ocspRequest.getEncoded());
+            final ClientResponse response = getClientResponse(ocspRequest);
 
             // ensure the request was completed successfully
             if (ClientResponse.Status.OK.getStatusCode() != response.getStatusInfo().getStatusCode()) {
@@ -309,22 +324,22 @@ public class OcspCertificateValidator {
 
             // verify the response status
             switch (ocspResponse.getStatus()) {
-                case OCSPRespStatus.SUCCESSFUL:
+                case OCSPRespBuilder.SUCCESSFUL:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.Successful);
                     break;
-                case OCSPRespStatus.INTERNAL_ERROR:
+                case OCSPRespBuilder.INTERNAL_ERROR:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.InternalError);
                     break;
-                case OCSPRespStatus.MALFORMED_REQUEST:
+                case OCSPRespBuilder.MALFORMED_REQUEST:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.MalformedRequest);
                     break;
-                case OCSPRespStatus.SIGREQUIRED:
+                case OCSPRespBuilder.SIG_REQUIRED:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.SignatureRequired);
                     break;
-                case OCSPRespStatus.TRY_LATER:
+                case OCSPRespBuilder.TRY_LATER:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.TryLater);
                     break;
-                case OCSPRespStatus.UNAUTHORIZED:
+                case OCSPRespBuilder.UNAUTHORIZED:
                     ocspStatus.setResponseStatus(OcspStatus.ResponseStatus.Unauthorized);
                     break;
                 default:
@@ -333,7 +348,7 @@ public class OcspCertificateValidator {
             }
 
             // only proceed if the response was successful
-            if (ocspResponse.getStatus() != OCSPRespStatus.SUCCESSFUL) {
+            if (ocspResponse.getStatus() != OCSPRespBuilder.SUCCESSFUL) {
                 logger.warn(String.format("OCSP request was unsuccessful (%s).", ocspStatus.getResponseStatus().toString()));
                 return ocspStatus;
             }
@@ -341,7 +356,7 @@ public class OcspCertificateValidator {
             // ensure the appropriate response object
             final Object ocspResponseObject = ocspResponse.getResponseObject();
             if (ocspResponseObject == null || !(ocspResponseObject instanceof BasicOCSPResp)) {
-                logger.warn(String.format("Unexcepted OCSP response object: %s", ocspResponseObject));
+                logger.warn(String.format("Unexpected OCSP response object: %s", ocspResponseObject));
                 return ocspStatus;
             }
 
@@ -349,9 +364,9 @@ public class OcspCertificateValidator {
             final BasicOCSPResp basicOcspResponse = (BasicOCSPResp) ocspResponse.getResponseObject();
 
             // attempt to locate the responder certificate
-            final X509Certificate[] responderCertificates = basicOcspResponse.getCerts(null);
+            final X509CertificateHolder[] responderCertificates = basicOcspResponse.getCerts();
             if (responderCertificates.length != 1) {
-                logger.warn(String.format("Unexcepted number of OCSP responder certificates: %s", responderCertificates.length));
+                logger.warn(String.format("Unexpected number of OCSP responder certificates: %s", responderCertificates.length));
                 return ocspStatus;
             }
 
@@ -359,7 +374,7 @@ public class OcspCertificateValidator {
             final X509Certificate trustedResponderCertificate = getTrustedResponderCertificate(responderCertificates[0], issuerCertificate);
             if (trustedResponderCertificate != null) {
                 // verify the response
-                if (basicOcspResponse.verify(trustedResponderCertificate.getPublicKey(), null)) {
+                if (basicOcspResponse.isSignatureValid(new JcaContentVerifierProviderBuilder().setProvider("BC").build(trustedResponderCertificate.getPublicKey()))) {
                     ocspStatus.setVerificationStatus(VerificationStatus.Verified);
                 } else {
                     ocspStatus.setVerificationStatus(VerificationStatus.Unverified);
@@ -387,34 +402,40 @@ public class OcspCertificateValidator {
                     }
                 }
             }
-        } catch (final OCSPException | IOException | UniformInterfaceException | ClientHandlerException | NoSuchProviderException e) {
+        } catch (final OCSPException | IOException | UniformInterfaceException | ClientHandlerException | OperatorCreationException e) {
             logger.error(e.getMessage(), e);
+        } catch (CertificateException e) {
+            e.printStackTrace();
         }
 
         return ocspStatus;
     }
 
+    private ClientResponse getClientResponse(OCSPReq ocspRequest) throws IOException {
+        final WebResource resource = client.resource(validationAuthorityURI);
+        return resource.header(CONTENT_TYPE_HEADER, OCSP_REQUEST_CONTENT_TYPE).post(ClientResponse.class, ocspRequest.getEncoded());
+    }
+
     /**
-     * Gets the trusted responder certificate. The response contains the
-     * responder certificate, however we cannot blindly trust it. Instead, we
-     * use a configured trusted CA. If the responder certificate is a trusted
-     * CA, then we can use it. If the responder certificate is not directly
-     * trusted, we still may be able to trust it if it was issued by the same CA
-     * that issued the subject certificate. Other various checks may be required
-     * (this portion is currently not implemented).
+     * Gets the trusted responder certificate. The response contains the responder certificate, however we cannot blindly trust it. Instead, we use a configured trusted CA. If the responder
+     * certificate is a trusted CA, then we can use it. If the responder certificate is not directly trusted, we still may be able to trust it if it was issued by the same CA that issued the subject
+     * certificate. Other various checks may be required (this portion is currently not implemented).
      *
-     * @param responderCertificate cert
-     * @param issuerCertificate cert
+     * @param responderCertificateHolder cert
+     * @param issuerCertificate          cert
      * @return cert
      */
-    private X509Certificate getTrustedResponderCertificate(final X509Certificate responderCertificate, final X509Certificate issuerCertificate) {
+    private X509Certificate getTrustedResponderCertificate(final X509CertificateHolder responderCertificateHolder, final X509Certificate issuerCertificate) throws CertificateException {
         // look for the responder's certificate specifically
-        if (trustedCAs.containsKey(responderCertificate.getSubjectX500Principal().getName())) {
-            return trustedCAs.get(responderCertificate.getSubjectX500Principal().getName());
+        final X509Certificate responderCertificate = new JcaX509CertificateConverter().setProvider("BC").getCertificate(responderCertificateHolder);
+        final String trustedCAName = responderCertificate.getSubjectX500Principal().getName();
+        if (trustedCAs.containsKey(trustedCAName)) {
+            return trustedCAs.get(trustedCAName);
         }
 
         // if the responder certificate was issued by the same CA that issued the subject certificate we may be able to use that...
-        if (responderCertificate.getIssuerX500Principal().equals(issuerCertificate.getSubjectX500Principal())) {
+        final X500Principal issuerCA = issuerCertificate.getSubjectX500Principal();
+        if (responderCertificate.getIssuerX500Principal().equals(issuerCA)) {
             // perform a number of verification steps... TODO... from sun.security.provider.certpath.OCSPResponse.java... currently incomplete...
 //            try {
 //                // ensure appropriate key usage

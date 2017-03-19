@@ -47,6 +47,8 @@ import javax.mail.internet.PreencodedMimeBodyPart;
 import javax.mail.util.ByteArrayDataSource;
 
 import org.apache.commons.codec.binary.Base64;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -55,7 +57,7 @@ import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -67,6 +69,7 @@ import org.apache.nifi.processor.util.StandardValidators;
 
 @SupportsBatching
 @Tags({"email", "put", "notify", "smtp"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Sends an e-mail to configured recipients for each incoming FlowFile")
 public class PutEmail extends AbstractProcessor {
 
@@ -292,19 +295,13 @@ public class PutEmail extends AbstractProcessor {
         final Session mailSession = this.createMailSession(properties);
 
         final Message message = new MimeMessage(mailSession);
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         try {
-            message.setFrom(InternetAddress.parse(context.getProperty(FROM).evaluateAttributeExpressions(flowFile).getValue())[0]);
-
-            final InternetAddress[] toAddresses = toInetAddresses(context.getProperty(TO).evaluateAttributeExpressions(flowFile).getValue());
-            message.setRecipients(RecipientType.TO, toAddresses);
-
-            final InternetAddress[] ccAddresses = toInetAddresses(context.getProperty(CC).evaluateAttributeExpressions(flowFile).getValue());
-            message.setRecipients(RecipientType.CC, ccAddresses);
-
-            final InternetAddress[] bccAddresses = toInetAddresses(context.getProperty(BCC).evaluateAttributeExpressions(flowFile).getValue());
-            message.setRecipients(RecipientType.BCC, bccAddresses);
+            message.addFrom(toInetAddresses(context, flowFile, FROM));
+            message.setRecipients(RecipientType.TO, toInetAddresses(context, flowFile, TO));
+            message.setRecipients(RecipientType.CC, toInetAddresses(context, flowFile, CC));
+            message.setRecipients(RecipientType.BCC, toInetAddresses(context, flowFile, BCC));
 
             message.setHeader("X-Mailer", context.getProperty(HEADER_XMAILER).evaluateAttributeExpressions(flowFile).getValue());
             message.setSubject(context.getProperty(SUBJECT).evaluateAttributeExpressions(flowFile).getValue());
@@ -321,7 +318,7 @@ public class PutEmail extends AbstractProcessor {
             if (context.getProperty(ATTACH_FILE).asBoolean()) {
                 final MimeBodyPart mimeText = new PreencodedMimeBodyPart("base64");
                 mimeText.setDataHandler(new DataHandler(new ByteArrayDataSource(
-                        Base64.encodeBase64(messageText.getBytes("UTF-8")), "text/plain; charset=\"utf-8\"")));
+                        Base64.encodeBase64(messageText.getBytes("UTF-8")), contentType + "; charset=\"utf-8\"")));
                 final MimeBodyPart mimeFile = new MimeBodyPart();
                 session.read(flowFile, new InputStreamCallback() {
                     @Override
@@ -341,14 +338,14 @@ public class PutEmail extends AbstractProcessor {
                 message.setContent(multipart);
             }
 
-            Transport.send(message);
+            send(message);
 
             session.getProvenanceReporter().send(flowFile, "mailto:" + message.getAllRecipients()[0].toString());
             session.transfer(flowFile, REL_SUCCESS);
             logger.info("Sent email as a result of receiving {}", new Object[]{flowFile});
         } catch (final ProcessException | MessagingException | IOException e) {
             context.yield();
-            logger.error("Failed to send email for {}: {}; routing to failure", new Object[]{flowFile, e});
+            logger.error("Failed to send email for {}: {}; routing to failure", new Object[]{flowFile, e.getMessage()}, e);
             session.transfer(flowFile, REL_FAILURE);
         }
     }
@@ -387,7 +384,7 @@ public class PutEmail extends AbstractProcessor {
 
         final Properties properties = new Properties();
 
-        final ProcessorLog logger = this.getLogger();
+        final ComponentLog logger = this.getLogger();
 
         for (Entry<String, PropertyDescriptor> entry : propertyToContext.entrySet()) {
 
@@ -415,7 +412,7 @@ public class PutEmail extends AbstractProcessor {
         StringBuilder message = new StringBuilder(messagePrepend);
         message.append(BODY_SEPARATOR);
         message.append("\nStandard FlowFile Metadata:");
-        message.append(String.format("\n\t%1$s = '%2$s'", "id", flowFile.getId()));
+        message.append(String.format("\n\t%1$s = '%2$s'", "id", flowFile.getAttribute(CoreAttributes.UUID.key())));
         message.append(String.format("\n\t%1$s = '%2$s'", "entryDate", new Date(flowFile.getEntryDate())));
         message.append(String.format("\n\t%1$s = '%2$s'", "fileSize", flowFile.getSize()));
         message.append("\nFlowFile Attributes:");
@@ -426,11 +423,43 @@ public class PutEmail extends AbstractProcessor {
         return message.toString();
     }
 
-    private static InternetAddress[] toInetAddresses(final String val) throws AddressException {
-        if (val == null) {
-            return new InternetAddress[0];
+    /**
+     * @param context the current context
+     * @param flowFile the current flow file
+     * @param propertyDescriptor the property to evaluate
+     * @return an InternetAddress[] parsed from the supplied property
+     * @throws AddressException if the property cannot be parsed to a valid InternetAddress[]
+     */
+    private InternetAddress[] toInetAddresses(final ProcessContext context, final FlowFile flowFile,
+            PropertyDescriptor propertyDescriptor) throws AddressException {
+        InternetAddress[] parse;
+        String value = context.getProperty(propertyDescriptor).evaluateAttributeExpressions(flowFile).getValue();
+        if (value == null || value.isEmpty()){
+            if (propertyDescriptor.isRequired()) {
+                final String exceptionMsg = "Required property '" + propertyDescriptor.getDisplayName() + "' evaluates to an empty string.";
+                throw new AddressException(exceptionMsg);
+            } else {
+                parse = new InternetAddress[0];
+            }
+        } else {
+            try {
+                parse = InternetAddress.parse(value);
+            } catch (AddressException e) {
+                final String exceptionMsg = "Unable to parse a valid address for property '" + propertyDescriptor.getDisplayName() + "' with value '"+ value +"'";
+                throw new AddressException(exceptionMsg);
+            }
         }
-        return InternetAddress.parse(val);
+        return parse;
+    }
+
+    /**
+     * Wrapper for static method {@link Transport#send(Message)} to add testability of this class.
+     *
+     * @param msg the message to send
+     * @throws MessagingException on error
+     */
+    protected void send(final Message msg) throws MessagingException {
+        Transport.send(msg);
     }
 
 }

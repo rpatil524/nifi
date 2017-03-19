@@ -22,6 +22,7 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryUsage;
 import java.lang.management.OperatingSystemMXBean;
+import java.lang.management.RuntimeMXBean;
 import java.lang.management.ThreadMXBean;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -52,6 +53,7 @@ public class SystemDiagnosticsFactory {
         final OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
         final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         final List<GarbageCollectorMXBean> garbageCollectors = ManagementFactory.getGarbageCollectorMXBeans();
+        final RuntimeMXBean runtime = ManagementFactory.getRuntimeMXBean();
 
         systemDiagnostics.setDaemonThreads(threads.getDaemonThreadCount());
         systemDiagnostics.setTotalThreads(threads.getThreadCount());
@@ -64,11 +66,15 @@ public class SystemDiagnosticsFactory {
         systemDiagnostics.setUsedNonHeap(nonHeap.getUsed());
         systemDiagnostics.setMaxNonHeap(nonHeap.getMax());
 
+        systemDiagnostics.setUptime(runtime.getUptime());
+
         systemDiagnostics.setAvailableProcessors(os.getAvailableProcessors());
 
         final double systemLoad = os.getSystemLoadAverage();
-        if (systemLoad > 0) {
+        if (systemLoad >= 0) {
             systemDiagnostics.setProcessorLoadAverage(systemLoad);
+        } else {
+            systemDiagnostics.setProcessorLoadAverage(-1.0);
         }
 
         // get the database disk usage

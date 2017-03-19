@@ -18,23 +18,25 @@ package org.apache.nifi.remote.cluster;
 
 public class NodeInformation {
 
-    private final String hostname;
+    private final String siteToSiteHostname;
     private final Integer siteToSitePort;
+    private final Integer siteToSiteHttpApiPort;
     private final int apiPort;
     private final boolean isSiteToSiteSecure;
     private final int totalFlowFiles;
 
-    public NodeInformation(final String hostname, final Integer siteToSitePort, final int apiPort,
-            final boolean isSiteToSiteSecure, final int totalFlowFiles) {
-        this.hostname = hostname;
+    public NodeInformation(final String siteToSiteHostname, final Integer siteToSitePort, final Integer siteToSiteHttpApiPort,
+            final int apiPort, final boolean isSiteToSiteSecure, final int totalFlowFiles) {
+        this.siteToSiteHostname = siteToSiteHostname;
         this.siteToSitePort = siteToSitePort;
+        this.siteToSiteHttpApiPort = siteToSiteHttpApiPort;
         this.apiPort = apiPort;
         this.isSiteToSiteSecure = isSiteToSiteSecure;
         this.totalFlowFiles = totalFlowFiles;
     }
 
-    public String getHostname() {
-        return hostname;
+    public String getSiteToSiteHostname() {
+        return siteToSiteHostname;
     }
 
     public int getAPIPort() {
@@ -43,6 +45,10 @@ public class NodeInformation {
 
     public Integer getSiteToSitePort() {
         return siteToSitePort;
+    }
+
+    public Integer getSiteToSiteHttpApiPort() {
+        return siteToSiteHttpApiPort;
     }
 
     public boolean isSiteToSiteSecure() {
@@ -66,7 +72,7 @@ public class NodeInformation {
         }
 
         final NodeInformation other = (NodeInformation) obj;
-        if (!hostname.equals(other.hostname)) {
+        if (!siteToSiteHostname.equals(other.siteToSiteHostname)) {
             return false;
         }
         if (siteToSitePort == null && other.siteToSitePort != null) {
@@ -77,6 +83,16 @@ public class NodeInformation {
         } else if (siteToSitePort != null && siteToSitePort.intValue() != other.siteToSitePort.intValue()) {
             return false;
         }
+
+        if (siteToSiteHttpApiPort == null && other.siteToSiteHttpApiPort != null) {
+            return false;
+        }
+        if (siteToSiteHttpApiPort != null && other.siteToSiteHttpApiPort == null) {
+            return false;
+        } else if (siteToSiteHttpApiPort != null && siteToSiteHttpApiPort.intValue() != other.siteToSiteHttpApiPort.intValue()) {
+            return false;
+        }
+
         if (apiPort != other.apiPort) {
             return false;
         }
@@ -88,11 +104,11 @@ public class NodeInformation {
 
     @Override
     public int hashCode() {
-        return 83832 + hostname.hashCode() + (siteToSitePort == null ? 8 : siteToSitePort.hashCode()) + apiPort + (isSiteToSiteSecure ? 3829 : 0);
+        return 83832 + siteToSiteHostname.hashCode() + (siteToSitePort == null ? 8 : siteToSitePort.hashCode()) + apiPort + (isSiteToSiteSecure ? 3829 : 0);
     }
 
     @Override
     public String toString() {
-        return "Node[" + hostname + ":" + apiPort + "]";
+        return "Node[" + siteToSiteHostname + ":" + apiPort + "]";
     }
 }

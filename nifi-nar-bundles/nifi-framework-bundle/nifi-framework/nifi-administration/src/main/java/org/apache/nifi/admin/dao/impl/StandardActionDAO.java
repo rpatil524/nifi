@@ -16,6 +16,32 @@
  */
 package org.apache.nifi.admin.dao.impl;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.action.Action;
+import org.apache.nifi.action.Component;
+import org.apache.nifi.action.FlowChangeAction;
+import org.apache.nifi.action.Operation;
+import org.apache.nifi.action.component.details.ComponentDetails;
+import org.apache.nifi.action.component.details.ExtensionDetails;
+import org.apache.nifi.action.component.details.FlowChangeExtensionDetails;
+import org.apache.nifi.action.component.details.FlowChangeRemoteProcessGroupDetails;
+import org.apache.nifi.action.component.details.RemoteProcessGroupDetails;
+import org.apache.nifi.action.details.ActionDetails;
+import org.apache.nifi.action.details.ConfigureDetails;
+import org.apache.nifi.action.details.ConnectDetails;
+import org.apache.nifi.action.details.FlowChangeConfigureDetails;
+import org.apache.nifi.action.details.FlowChangeConnectDetails;
+import org.apache.nifi.action.details.FlowChangeMoveDetails;
+import org.apache.nifi.action.details.FlowChangePurgeDetails;
+import org.apache.nifi.action.details.MoveDetails;
+import org.apache.nifi.action.details.PurgeDetails;
+import org.apache.nifi.admin.RepositoryUtils;
+import org.apache.nifi.admin.dao.ActionDAO;
+import org.apache.nifi.admin.dao.DataAccessException;
+import org.apache.nifi.history.History;
+import org.apache.nifi.history.HistoryQuery;
+import org.apache.nifi.history.PreviousValue;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -28,24 +54,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.nifi.action.Action;
-import org.apache.nifi.action.Component;
-import org.apache.nifi.action.Operation;
-import org.apache.nifi.action.component.details.ComponentDetails;
-import org.apache.nifi.action.component.details.ExtensionDetails;
-import org.apache.nifi.action.component.details.RemoteProcessGroupDetails;
-import org.apache.nifi.action.details.ActionDetails;
-import org.apache.nifi.action.details.ConfigureDetails;
-import org.apache.nifi.action.details.ConnectDetails;
-import org.apache.nifi.action.details.MoveDetails;
-import org.apache.nifi.action.details.PurgeDetails;
-import org.apache.nifi.admin.RepositoryUtils;
-import org.apache.nifi.admin.dao.ActionDAO;
-import org.apache.nifi.admin.dao.DataAccessException;
-import org.apache.nifi.history.History;
-import org.apache.nifi.history.HistoryQuery;
-import org.apache.nifi.history.PreviousValue;
-import org.apache.commons.lang3.StringUtils;
 
 /**
  *
@@ -56,15 +64,14 @@ public class StandardActionDAO implements ActionDAO {
     // action table
     // ------------
     private static final String INSERT_ACTION = "INSERT INTO ACTION ("
-            + "USER_DN, USER_NAME, SOURCE_ID, SOURCE_NAME, SOURCE_TYPE, OPERATION, ACTION_TIMESTAMP"
+            + "IDENTITY, SOURCE_ID, SOURCE_NAME, SOURCE_TYPE, OPERATION, ACTION_TIMESTAMP"
             + ") VALUES ("
             + "?, "
             + "?, "
             + "?, "
             + "?, "
             + "?, "
-            + "?, "
-            + "?, "
+            + "? "
             + ")";
 
     // -----------------
@@ -171,7 +178,7 @@ public class StandardActionDAO implements ActionDAO {
 
     private static final String SELECT_PREVIOUS_VALUES = "SELECT CD.VALUE, "
             + "A.ACTION_TIMESTAMP, "
-            + "A.USER_NAME "
+            + "A.IDENTITY "
             + "FROM CONFIGURE_DETAILS CD "
             + "INNER JOIN ACTION A "
             + "ON CD.ACTION_ID = A.ID "
@@ -191,12 +198,12 @@ public class StandardActionDAO implements ActionDAO {
         this.columnMap.put("sourceName", "SOURCE_NAME");
         this.columnMap.put("sourceType", "SOURCE_TYPE");
         this.columnMap.put("operation", "OPERATION");
-        this.columnMap.put("userName", "USER_NAME");
+        this.columnMap.put("userIdentity", "IDENTITY");
     }
 
     @Override
-    public void createAction(Action action) throws DataAccessException {
-        if (action.getUserDn() == null) {
+    public Action createAction(Action action) throws DataAccessException {
+        if (action.getUserIdentity() == null) {
             throw new IllegalArgumentException("User cannot be null.");
         }
 
@@ -209,21 +216,30 @@ public class StandardActionDAO implements ActionDAO {
         try {
             // obtain a statement to insert to the action table
             statement = connection.prepareStatement(INSERT_ACTION, Statement.RETURN_GENERATED_KEYS);
-            statement.setString(1, StringUtils.left(action.getUserDn(), 255));
-            statement.setString(2, StringUtils.left(action.getUserName(), 100));
-            statement.setString(3, action.getSourceId());
-            statement.setString(4, StringUtils.left(action.getSourceName(), 1000));
-            statement.setString(5, action.getSourceType().toString());
-            statement.setString(6, action.getOperation().toString());
-            statement.setTimestamp(7, new java.sql.Timestamp(action.getTimestamp().getTime()));
+            statement.setString(1, StringUtils.left(action.getUserIdentity(), 4096));
+            statement.setString(2, action.getSourceId());
+            statement.setString(3, StringUtils.left(action.getSourceName(), 1000));
+            statement.setString(4, action.getSourceType().toString());
+            statement.setString(5, action.getOperation().toString());
+            statement.setTimestamp(6, new java.sql.Timestamp(action.getTimestamp().getTime()));
 
             // insert the action
             int updateCount = statement.executeUpdate();
 
+            final FlowChangeAction createdAction = new FlowChangeAction();
+            createdAction.setUserIdentity(action.getUserIdentity());
+            createdAction.setSourceId(action.getSourceId());
+            createdAction.setSourceName(action.getSourceName());
+            createdAction.setSourceType(action.getSourceType());
+            createdAction.setOperation(action.getOperation());
+            createdAction.setTimestamp(action.getTimestamp());
+            createdAction.setActionDetails(action.getActionDetails());
+            createdAction.setComponentDetails(action.getComponentDetails());
+
             // get the action id
             rs = statement.getGeneratedKeys();
             if (updateCount == 1 && rs.next()) {
-                action.setId(rs.getInt(1));
+                createdAction.setId(rs.getInt(1));
             } else {
                 throw new DataAccessException("Unable to insert action.");
             }
@@ -232,25 +248,26 @@ public class StandardActionDAO implements ActionDAO {
             statement.close();
 
             // determine the type of component
-            ComponentDetails componentDetails = action.getComponentDetails();
-            if (componentDetails instanceof ExtensionDetails) {
-                createExtensionDetails(action.getId(), (ExtensionDetails) componentDetails);
-            } else if (componentDetails instanceof RemoteProcessGroupDetails) {
-                createRemoteProcessGroupDetails(action.getId(), (RemoteProcessGroupDetails) componentDetails);
+            ComponentDetails componentDetails = createdAction.getComponentDetails();
+            if (componentDetails instanceof FlowChangeExtensionDetails) {
+                createExtensionDetails(createdAction.getId(), (ExtensionDetails) componentDetails);
+            } else if (componentDetails instanceof FlowChangeRemoteProcessGroupDetails) {
+                createRemoteProcessGroupDetails(createdAction.getId(), (RemoteProcessGroupDetails) componentDetails);
             }
 
             // determine the type of action
-            ActionDetails details = action.getActionDetails();
-            if (details instanceof ConnectDetails) {
-                createConnectDetails(action.getId(), (ConnectDetails) details);
-            } else if (details instanceof MoveDetails) {
-                createMoveDetails(action.getId(), (MoveDetails) details);
-            } else if (details instanceof ConfigureDetails) {
-                createConfigureDetails(action.getId(), (ConfigureDetails) details);
-            } else if (details instanceof PurgeDetails) {
-                createPurgeDetails(action.getId(), (PurgeDetails) details);
+            ActionDetails details = createdAction.getActionDetails();
+            if (details instanceof FlowChangeConnectDetails) {
+                createConnectDetails(createdAction.getId(), (ConnectDetails) details);
+            } else if (details instanceof FlowChangeMoveDetails) {
+                createMoveDetails(createdAction.getId(), (MoveDetails) details);
+            } else if (details instanceof FlowChangeConfigureDetails) {
+                createConfigureDetails(createdAction.getId(), (ConfigureDetails) details);
+            } else if (details instanceof FlowChangePurgeDetails) {
+                createPurgeDetails(createdAction.getId(), (PurgeDetails) details);
             }
 
+            return createdAction;
         } catch (SQLException sqle) {
             throw new DataAccessException(sqle);
         } finally {
@@ -439,8 +456,8 @@ public class StandardActionDAO implements ActionDAO {
             }
 
             // append the user id as necessary
-            if (historyQuery.getUserName() != null) {
-                where.add("UPPER(USER_NAME) LIKE ?");
+            if (historyQuery.getUserIdentity() != null) {
+                where.add("UPPER(IDENTITY) LIKE ?");
             }
 
             // append the source id as necessary
@@ -468,8 +485,8 @@ public class StandardActionDAO implements ActionDAO {
             }
 
             // set the user id as necessary
-            if (historyQuery.getUserName() != null) {
-                statement.setString(paramIndex++, "%" + historyQuery.getUserName().toUpperCase() + "%");
+            if (historyQuery.getUserIdentity() != null) {
+                statement.setString(paramIndex++, "%" + historyQuery.getUserIdentity().toUpperCase() + "%");
             }
 
             // set the source id as necessary
@@ -516,8 +533,8 @@ public class StandardActionDAO implements ActionDAO {
             }
 
             // set the user id as necessary
-            if (historyQuery.getUserName() != null) {
-                statement.setString(paramIndex++, "%" + historyQuery.getUserName().toUpperCase() + "%");
+            if (historyQuery.getUserIdentity() != null) {
+                statement.setString(paramIndex++, "%" + historyQuery.getUserIdentity().toUpperCase() + "%");
             }
 
             // set the source id as necessary
@@ -540,10 +557,9 @@ public class StandardActionDAO implements ActionDAO {
                 final Operation operation = Operation.valueOf(rs.getString("OPERATION"));
                 final Component component = Component.valueOf(rs.getString("SOURCE_TYPE"));
 
-                Action action = new Action();
+                FlowChangeAction action = new FlowChangeAction();
                 action.setId(actionId);
-                action.setUserDn(rs.getString("USER_DN"));
-                action.setUserName(rs.getString("USER_NAME"));
+                action.setUserIdentity(rs.getString("IDENTITY"));
                 action.setOperation(Operation.valueOf(rs.getString("OPERATION")));
                 action.setTimestamp(new Date(rs.getTimestamp("ACTION_TIMESTAMP").getTime()));
                 action.setSourceId(rs.getString("SOURCE_ID"));
@@ -597,7 +613,7 @@ public class StandardActionDAO implements ActionDAO {
 
     @Override
     public Action getAction(Integer actionId) throws DataAccessException {
-        Action action = null;
+        FlowChangeAction action = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -614,10 +630,9 @@ public class StandardActionDAO implements ActionDAO {
                 Component component = Component.valueOf(rs.getString("SOURCE_TYPE"));
 
                 // populate the action
-                action = new Action();
+                action = new FlowChangeAction();
                 action.setId(rs.getInt("ID"));
-                action.setUserDn(rs.getString("USER_DN"));
-                action.setUserName(rs.getString("USER_NAME"));
+                action.setUserIdentity(rs.getString("IDENTITY"));
                 action.setOperation(operation);
                 action.setTimestamp(new Date(rs.getTimestamp("ACTION_TIMESTAMP").getTime()));
                 action.setSourceId(rs.getString("SOURCE_ID"));
@@ -664,7 +679,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private ExtensionDetails getExtensionDetails(Integer actionId) throws DataAccessException {
-        ExtensionDetails extensionDetails = null;
+        FlowChangeExtensionDetails extensionDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -677,7 +692,7 @@ public class StandardActionDAO implements ActionDAO {
 
             // ensure results
             if (rs.next()) {
-                extensionDetails = new ExtensionDetails();
+                extensionDetails = new FlowChangeExtensionDetails();
                 extensionDetails.setType(rs.getString("TYPE"));
             }
         } catch (SQLException sqle) {
@@ -691,7 +706,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private RemoteProcessGroupDetails getRemoteProcessGroupDetails(Integer actionId) throws DataAccessException {
-        RemoteProcessGroupDetails remoteProcessGroupDetails = null;
+        FlowChangeRemoteProcessGroupDetails remoteProcessGroupDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -704,7 +719,7 @@ public class StandardActionDAO implements ActionDAO {
 
             // ensure results
             if (rs.next()) {
-                remoteProcessGroupDetails = new RemoteProcessGroupDetails();
+                remoteProcessGroupDetails = new FlowChangeRemoteProcessGroupDetails();
                 remoteProcessGroupDetails.setUri(rs.getString("URI"));
             }
         } catch (SQLException sqle) {
@@ -718,7 +733,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private MoveDetails getMoveDetails(Integer actionId) throws DataAccessException {
-        MoveDetails moveDetails = null;
+        FlowChangeMoveDetails moveDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -731,7 +746,7 @@ public class StandardActionDAO implements ActionDAO {
 
             // ensure results
             if (rs.next()) {
-                moveDetails = new MoveDetails();
+                moveDetails = new FlowChangeMoveDetails();
                 moveDetails.setGroupId(rs.getString("GROUP_ID"));
                 moveDetails.setGroup(rs.getString("GROUP_NAME"));
                 moveDetails.setPreviousGroupId(rs.getString("PREVIOUS_GROUP_ID"));
@@ -748,7 +763,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private ConnectDetails getConnectDetails(Integer actionId) throws DataAccessException {
-        ConnectDetails connectionDetails = null;
+        FlowChangeConnectDetails connectionDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -764,7 +779,7 @@ public class StandardActionDAO implements ActionDAO {
                 final Component sourceComponent = Component.valueOf(rs.getString("SOURCE_TYPE"));
                 final Component destinationComponent = Component.valueOf(rs.getString("DESTINATION_TYPE"));
 
-                connectionDetails = new ConnectDetails();
+                connectionDetails = new FlowChangeConnectDetails();
                 connectionDetails.setSourceId(rs.getString("SOURCE_ID"));
                 connectionDetails.setSourceName(rs.getString("SOURCE_NAME"));
                 connectionDetails.setSourceType(sourceComponent);
@@ -784,7 +799,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private ConfigureDetails getConfigureDetails(Integer actionId) throws DataAccessException {
-        ConfigureDetails configurationDetails = null;
+        FlowChangeConfigureDetails configurationDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -797,7 +812,7 @@ public class StandardActionDAO implements ActionDAO {
 
             // ensure results
             if (rs.next()) {
-                configurationDetails = new ConfigureDetails();
+                configurationDetails = new FlowChangeConfigureDetails();
                 configurationDetails.setName(rs.getString("NAME"));
                 configurationDetails.setValue(rs.getString("VALUE"));
                 configurationDetails.setPreviousValue(rs.getString("PREVIOUS_VALUE"));
@@ -813,7 +828,7 @@ public class StandardActionDAO implements ActionDAO {
     }
 
     private PurgeDetails getPurgeDetails(Integer actionId) throws DataAccessException {
-        PurgeDetails purgeDetails = null;
+        FlowChangePurgeDetails purgeDetails = null;
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
@@ -826,7 +841,7 @@ public class StandardActionDAO implements ActionDAO {
 
             // ensure results
             if (rs.next()) {
-                purgeDetails = new PurgeDetails();
+                purgeDetails = new FlowChangePurgeDetails();
                 purgeDetails.setEndDate(new Date(rs.getTimestamp("END_DATE").getTime()));
             }
         } catch (SQLException sqle) {
@@ -888,7 +903,7 @@ public class StandardActionDAO implements ActionDAO {
                 final PreviousValue previousValue = new PreviousValue();
                 previousValue.setPreviousValue(rs.getString("VALUE"));
                 previousValue.setTimestamp(new Date(rs.getTimestamp("ACTION_TIMESTAMP").getTime()));
-                previousValue.setUserName(rs.getString("USER_NAME"));
+                previousValue.setUserIdentity(rs.getString("IDENTITY"));
                 previousValues.add(previousValue);
             }
         } catch (SQLException sqle) {

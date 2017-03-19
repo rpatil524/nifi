@@ -14,13 +14,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@import url(reset.css);
 @import url(processor-configuration.css);
 @import url(processor-details.css);
 @import url(process-group-configuration.css);
-@import url(process-group-details.css);
+@import url(policy-management.css);
+@import url(queue-listing.css);
 @import url(remote-process-group-configuration.css);
 @import url(controller-service.css);
+@import url(component-state.css);
 @import url(reporting-task.css);
 @import url(port-configuration.css);
 @import url(port-details.css);
@@ -28,7 +29,6 @@
 @import url(connection-configuration.css);
 @import url(connection-details.css);
 @import url(shell.css);
-@import url(registration.css);
 @import url(dialog.css);
 @import url(new-processor-dialog.css);
 @import url(new-controller-service-dialog.css);
@@ -42,4 +42,7 @@
 @import url(settings.css);
 @import url(about.css);
 @import url(message-pane.css);
+@import url(common-ui.css);
 @import url(status-history.css);
+@import url(../fonts/flowfont/flowfont.css);
+@import url(../assets/font-awesome/css/font-awesome.css);

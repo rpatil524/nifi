@@ -16,6 +16,35 @@
  */
 package org.apache.nifi.audit;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.action.Action;
+import org.apache.nifi.action.Component;
+import org.apache.nifi.action.FlowChangeAction;
+import org.apache.nifi.action.Operation;
+import org.apache.nifi.action.details.ActionDetails;
+import org.apache.nifi.action.details.ConnectDetails;
+import org.apache.nifi.action.details.FlowChangeConfigureDetails;
+import org.apache.nifi.action.details.FlowChangeConnectDetails;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.connectable.Connectable;
+import org.apache.nifi.connectable.Connection;
+import org.apache.nifi.connectable.Funnel;
+import org.apache.nifi.connectable.Port;
+import org.apache.nifi.controller.ProcessorNode;
+import org.apache.nifi.flowfile.FlowFilePrioritizer;
+import org.apache.nifi.groups.ProcessGroup;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.remote.RemoteGroupPort;
+import org.apache.nifi.remote.TransferDirection;
+import org.apache.nifi.web.api.dto.ConnectionDTO;
+import org.apache.nifi.web.dao.ConnectionDAO;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
@@ -23,34 +52,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-
-import org.apache.nifi.action.Action;
-import org.apache.nifi.action.Component;
-import org.apache.nifi.action.Operation;
-import org.apache.nifi.action.details.ActionDetails;
-import org.apache.nifi.action.details.ConfigureDetails;
-import org.apache.nifi.action.details.ConnectDetails;
-import org.apache.nifi.connectable.Connectable;
-import org.apache.nifi.connectable.Connection;
-import org.apache.nifi.connectable.Funnel;
-import org.apache.nifi.connectable.Port;
-import org.apache.nifi.controller.ProcessorNode;
-import org.apache.nifi.groups.ProcessGroup;
-import org.apache.nifi.flowfile.FlowFilePrioritizer;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.remote.RemoteGroupPort;
-import org.apache.nifi.remote.TransferDirection;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
-import org.apache.nifi.user.NiFiUser;
-import org.apache.nifi.web.api.dto.ConnectionDTO;
-import org.apache.nifi.web.dao.ConnectionDAO;
-
-import org.apache.commons.lang3.StringUtils;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.Around;
-import org.aspectj.lang.annotation.Aspect;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Audits relationship creation/removal.
@@ -98,19 +99,18 @@ public class RelationshipAuditor extends NiFiAuditor {
      * Audits the creation and removal of relationships via updateConnection().
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param connectionDTO dto
      * @param connectionDAO dao
      * @return connection
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.ConnectionDAO+) && "
-            + "execution(org.apache.nifi.connectable.Connection updateConnection(java.lang.String, org.apache.nifi.web.api.dto.ConnectionDTO)) && "
-            + "args(groupId, connectionDTO) && "
+            + "execution(org.apache.nifi.connectable.Connection updateConnection(org.apache.nifi.web.api.dto.ConnectionDTO)) && "
+            + "args(connectionDTO) && "
             + "target(connectionDAO)")
-    public Connection updateConnectionAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, ConnectionDTO connectionDTO, ConnectionDAO connectionDAO) throws Throwable {
+    public Connection updateConnectionAdvice(ProceedingJoinPoint proceedingJoinPoint, ConnectionDTO connectionDTO, ConnectionDAO connectionDAO) throws Throwable {
         // get the previous configuration
-        Connection connection = connectionDAO.getConnection(groupId, connectionDTO.getId());
+        Connection connection = connectionDAO.getConnection(connectionDTO.getId());
         Connectable previousDestination = connection.getDestination();
         Collection<Relationship> previousRelationships = connection.getRelationships();
         Map<String, String> values = extractConfiguredPropertyValues(connection, connectionDTO);
@@ -179,15 +179,14 @@ public class RelationshipAuditor extends NiFiAuditor {
                 // ensure the value is changing
                 if (oldValue == null || newValue == null || !newValue.equals(oldValue)) {
                     // create the config details
-                    ConfigureDetails configurationDetails = new ConfigureDetails();
+                    FlowChangeConfigureDetails configurationDetails = new FlowChangeConfigureDetails();
                     configurationDetails.setName(property);
                     configurationDetails.setValue(newValue);
                     configurationDetails.setPreviousValue(oldValue);
 
                     // create a configuration action
-                    Action configurationAction = new Action();
-                    configurationAction.setUserDn(user.getDn());
-                    configurationAction.setUserName(user.getUserName());
+                    FlowChangeAction configurationAction = new FlowChangeAction();
+                    configurationAction.setUserIdentity(user.getIdentity());
                     configurationAction.setOperation(Operation.Configure);
                     configurationAction.setTimestamp(actionTimestamp);
                     configurationAction.setSourceId(connection.getIdentifier());
@@ -212,18 +211,17 @@ public class RelationshipAuditor extends NiFiAuditor {
      * Audits the removal of relationships via deleteConnection().
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param id id
      * @param connectionDAO dao
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.ConnectionDAO+) && "
-            + "execution(void deleteConnection(java.lang.String, java.lang.String)) && "
-            + "args(groupId, id) && "
+            + "execution(void deleteConnection(java.lang.String)) && "
+            + "args(id) && "
             + "target(connectionDAO)")
-    public void removeConnectionAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, String id, ConnectionDAO connectionDAO) throws Throwable {
+    public void removeConnectionAdvice(ProceedingJoinPoint proceedingJoinPoint, String id, ConnectionDAO connectionDAO) throws Throwable {
         // get the connection before performing the update
-        Connection connection = connectionDAO.getConnection(groupId, id);
+        Connection connection = connectionDAO.getConnection(id);
 
         // perform the underlying operation
         proceedingJoinPoint.proceed();
@@ -263,7 +261,7 @@ public class RelationshipAuditor extends NiFiAuditor {
         final String formattedRelationships = relationshipNames.isEmpty() ? StringUtils.EMPTY : StringUtils.join(relationshipNames, ", ");
 
         // create the connect details
-        final ConnectDetails connectDetails = new ConnectDetails();
+        final FlowChangeConnectDetails connectDetails = new FlowChangeConnectDetails();
         connectDetails.setSourceId(source.getIdentifier());
         connectDetails.setSourceName(source.getName());
         connectDetails.setSourceType(sourceType);
@@ -327,7 +325,7 @@ public class RelationshipAuditor extends NiFiAuditor {
      * @return action
      */
     public Action generateAuditRecordForConnection(Connection connection, Operation operation, ActionDetails actionDetails) {
-        Action action = null;
+        FlowChangeAction action = null;
 
         // get the current user
         NiFiUser user = NiFiUserUtils.getNiFiUser();
@@ -350,9 +348,8 @@ public class RelationshipAuditor extends NiFiAuditor {
             Date actionTimestamp = new Date();
 
             // create a new relationship action
-            action = new Action();
-            action.setUserDn(user.getDn());
-            action.setUserName(user.getUserName());
+            action = new FlowChangeAction();
+            action.setUserIdentity(user.getIdentity());
             action.setOperation(operation);
             action.setTimestamp(actionTimestamp);
             action.setSourceId(connectionId);

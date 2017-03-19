@@ -15,7 +15,7 @@
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" version="1.0">
     <xs:element name="flowController" type="FlowControllerType" />
-	
+
     <xs:complexType name="FlowControllerType">
         <xs:sequence>
             <xs:choice>
@@ -29,10 +29,13 @@
             <!-- Groupings of Processors/Ports -->
             <xs:element name="rootGroup" type="RootProcessGroupType" />
             
+            <!-- This exists for backward compatibility between NiFi 1.x and NiFi 0.x. Any Controller Service that is listed
+            here is assigned to the root group -->
             <xs:element name="controllerServices" type="ControllerServicesType" minOccurs="0" maxOccurs="1" />
             
             <xs:element name="reportingTasks" type="ReportingTasksType" minOccurs="0" maxOccurs="1" />
         </xs:sequence>
+        <xs:attribute name="encoding-version" type="xs:string"/>
     </xs:complexType>
 	
     <!-- the processor "id" is a key that should be valid within each flowController-->
@@ -83,6 +86,8 @@
             <xs:element name="isolated" type="xs:boolean" maxOccurs="1" minOccurs="0" />
 
             <xs:element name="schedulingStrategy" type="SchedulingStrategy" minOccurs="0" maxOccurs="1" />
+
+            <xs:element name="executionNode" type="ExecutionNode" minOccurs="0" maxOccurs="1" />
 
             <xs:element name="runDurationNanos" type="xs:long" minOccurs="0" maxOccurs="1" />
 
@@ -139,6 +144,7 @@
             <xs:element name="processGroup" type="ProcessGroupType" minOccurs="0" maxOccurs="unbounded"	/>
             <xs:element name="remoteProcessGroup" type="RemoteProcessGroupType" minOccurs="0" maxOccurs="unbounded"	/>
             <xs:element name="connection" type="ConnectionType" minOccurs="0" maxOccurs="unbounded" />
+            <xs:element name="controllerService" type="ControllerServiceType" minOccurs="0" maxOccurs="unbounded" />
         </xs:sequence>
     </xs:complexType>
     
@@ -162,6 +168,7 @@
             <xs:element name="processGroup" type="ProcessGroupType" minOccurs="0" maxOccurs="unbounded"	/>
             <xs:element name="remoteProcessGroup" type="RemoteProcessGroupType" minOccurs="0" maxOccurs="unbounded"	/>
             <xs:element name="connection" type="ConnectionType" minOccurs="0" maxOccurs="unbounded" />
+            <xs:element name="controllerService" type="ControllerServiceType" minOccurs="0" maxOccurs="unbounded" />
         </xs:sequence>
     </xs:complexType>
     
@@ -189,10 +196,17 @@
             <xs:element name="position" type="PositionType" />
             <xs:element name="comment" type="xs:string" />
             <xs:element name="url" type="xs:anyURI" />
+            <xs:element name="urls" type="xs:string" minOccurs="0" maxOccurs="1" />
             <xs:element name="timeout" type="xs:string" />
             <xs:element name="yieldPeriod" type="TimePeriod" minOccurs="0" maxOccurs="1" />
             <xs:element name="transmitting" type="xs:boolean" />
-            
+            <xs:element name="transportProtocol" type="xs:string" minOccurs="0" maxOccurs="1" />
+            <xs:element name="proxyHost" type="xs:string" minOccurs="0" maxOccurs="1" />
+            <xs:element name="proxyPort" type="xs:int" minOccurs="0" maxOccurs="1" />
+            <xs:element name="proxyUser" type="xs:string" minOccurs="0" maxOccurs="1" />
+            <xs:element name="proxyPassword" type="xs:string" minOccurs="0" maxOccurs="1" />
+            <xs:element name="networkInterface" type="xs:string" minOccurs="0" maxOccurs="1" />
+
             <!-- The input ports and output ports of the remote group may change without our knowledge; however,
             they are persisted here because on a restart of NiFi, we need to have the Input & Output Ports' IDs
             and associated names persisted so that we can attempt to connect to these ports -->
@@ -302,7 +316,7 @@
 
     <xs:simpleType name="TimePeriod">
         <xs:restriction base="xs:string">
-            <xs:pattern value="\d+\s*(ns|nano|nanos|nanoseconds|ms|milli|millis|milliseconds|s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days)"></xs:pattern>
+            <xs:pattern value="\d+\s*(ns|nano|nanos|nanosecond|nanoseconds|ms|milli|millis|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)"></xs:pattern>
         </xs:restriction>
     </xs:simpleType>
 	
@@ -332,6 +346,13 @@
         </xs:restriction>
     </xs:simpleType>
     
+    <xs:simpleType name="ExecutionNode">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="ALL"></xs:enumeration>
+            <xs:enumeration value="PRIMARY"></xs:enumeration>
+        </xs:restriction>
+    </xs:simpleType>
+
     <xs:complexType name="ControllerServicesType">
         <xs:sequence>
             <xs:element name="controllerService" type="ControllerServiceType" minOccurs="0" maxOccurs="unbounded" />
@@ -364,7 +385,7 @@
             <xs:element name="comment" type="xs:string" />
             <xs:element name="class" type="NonEmptyStringType" />
             <xs:element name="schedulingPeriod" type="NonEmptyStringType"/>
-            <xs:element name="schedulingState" type="ScheduledState" />
+            <xs:element name="scheduledState" type="ScheduledState" />
             <xs:element name="schedulingStrategy" type="SchedulingStrategy" />
     		
             <xs:element name="property" type="PropertyType" minOccurs="0" maxOccurs="unbounded"/>

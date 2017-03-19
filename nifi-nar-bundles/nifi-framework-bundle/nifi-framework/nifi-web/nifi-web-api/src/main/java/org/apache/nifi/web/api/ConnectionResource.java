@@ -22,714 +22,160 @@ import com.wordnik.swagger.annotations.ApiParam;
 import com.wordnik.swagger.annotations.ApiResponse;
 import com.wordnik.swagger.annotations.ApiResponses;
 import com.wordnik.swagger.annotations.Authorization;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
-import javax.servlet.http.HttpServletRequest;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.ConnectionAuthorizable;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.connectable.Connectable;
+import org.apache.nifi.connectable.ConnectableType;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.ConnectionDTO;
+import org.apache.nifi.web.api.dto.PositionDTO;
+import org.apache.nifi.web.api.entity.ConnectionEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.DefaultValue;
-import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
 import javax.ws.rs.HttpMethod;
-import javax.ws.rs.POST;
 import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
-import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
-
-import org.apache.nifi.cluster.manager.impl.WebClusterManager;
-import org.apache.nifi.util.NiFiProperties;
-import org.apache.nifi.web.ConfigurationSnapshot;
-import org.apache.nifi.web.IllegalClusterResourceRequestException;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import static org.apache.nifi.web.api.ApplicationResource.CLIENT_ID;
-import org.apache.nifi.web.api.dto.ConnectableDTO;
-import org.apache.nifi.web.api.dto.ConnectionDTO;
-import org.apache.nifi.web.api.dto.PositionDTO;
-import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.dto.status.StatusHistoryDTO;
-import org.apache.nifi.web.api.entity.ConnectionEntity;
-import org.apache.nifi.web.api.entity.ConnectionsEntity;
-import org.apache.nifi.web.api.entity.StatusHistoryEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.ConnectableTypeParameter;
-import org.apache.nifi.web.api.request.IntegerParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import org.apache.commons.lang3.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.security.access.prepost.PreAuthorize;
+import java.util.List;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Connection.
  */
-@Api(hidden = true)
+@Path("/connections")
+@Api(
+        value = "/connections",
+        description = "Endpoint for managing a Connection."
+)
 public class ConnectionResource extends ApplicationResource {
 
-    private static final Logger logger = LoggerFactory.getLogger(ConnectionResource.class);
-
     private NiFiServiceFacade serviceFacade;
-    private WebClusterManager clusterManager;
-    private NiFiProperties properties;
-    private String groupId;
+    private Authorizer authorizer;
 
     /**
-     * Populate the uri's for the specified processors and their relationships.
+     * Populate the URIs for the specified connections.
      *
-     * @param connections connections
+     * @param connectionEntities connections
      * @return dtos
      */
-    public Set<ConnectionDTO> populateRemainingConnectionsContent(Set<ConnectionDTO> connections) {
-        for (ConnectionDTO connection : connections) {
-            populateRemainingConnectionContent(connection);
+    public Set<ConnectionEntity> populateRemainingConnectionEntitiesContent(Set<ConnectionEntity> connectionEntities) {
+        for (ConnectionEntity connectionEntity : connectionEntities) {
+            populateRemainingConnectionEntityContent(connectionEntity);
         }
-        return connections;
+        return connectionEntities;
     }
 
     /**
-     * Populate the uri's for the specified processor and its relationships.
-     */
-    private ConnectionDTO populateRemainingConnectionContent(ConnectionDTO connection) {
-        // populate the remaining properties
-        connection.setUri(generateResourceUri("controller", "process-groups", groupId, "connections", connection.getId()));
-        return connection;
-    }
-
-    /**
-     * Gets all the connections.
+     * Populate the URIs for the specified connection.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A connectionsEntity.
+     * @param connectionEntity connection
+     * @return dto
      */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("") // necessary due to bug in swagger
-    @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Gets all connections",
-            response = ConnectionsEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getConnections(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        // all of the relationships for the specified source processor
-        Set<ConnectionDTO> connections = serviceFacade.getConnections(groupId);
-
-        // create the revision
-        RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the client response entity
-        ConnectionsEntity entity = new ConnectionsEntity();
-        entity.setRevision(revision);
-        entity.setConnections(populateRemainingConnectionsContent(connections));
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
+    public ConnectionEntity populateRemainingConnectionEntityContent(ConnectionEntity connectionEntity) {
+        connectionEntity.setUri(generateResourceUri("connections", connectionEntity.getId()));
+        return connectionEntity;
     }
 
     /**
      * Retrieves the specified connection.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @param id The id of the connection.
      * @return A connectionEntity.
+     * @throws InterruptedException if interrupted
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    @Produces(MediaType.APPLICATION_JSON)
     @Path("/{id}")
-    @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
             value = "Gets a connection",
             response = ConnectionEntity.class,
             authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+                    @Authorization(value = "Read Source - /{component-type}/{uuid}", type = ""),
+                    @Authorization(value = "Read Destination - /{component-type}/{uuid}", type = "")
             }
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
     public Response getConnection(
             @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @ApiParam(
                     value = "The connection id.",
                     required = true
             )
-            @PathParam("id") String id) {
+            @PathParam("id") final String id) throws InterruptedException {
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.GET);
         }
+
+        // authorize access
+        serviceFacade.authorizeAccess(lookup -> {
+            // ensure read access to this connection (checks source and destination)
+            final Authorizable authorizable = lookup.getConnection(id).getAuthorizable();
+            authorizable.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
+        });
 
         // get the specified relationship
-        ConnectionDTO connection = serviceFacade.getConnection(groupId, id);
-
-        // create the revision
-        RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(revision);
-        entity.setConnection(populateRemainingConnectionContent(connection));
+        ConnectionEntity entity = serviceFacade.getConnection(id);
+        populateRemainingConnectionEntityContent(entity);
 
         // generate the response
         return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the specified connection status history.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param id The id of the connection to retrieve.
-     * @return A statusHistoryEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/{id}/status/history")
-    @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Gets the status history for a connection",
-            response = StatusHistoryEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getConnectionStatusHistory(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @ApiParam(
-                    value = "The connection id.",
-                    required = true
-            )
-            @PathParam("id") String id) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            throw new IllegalClusterResourceRequestException("This request is only supported in standalone mode.");
-        }
-
-        // get the specified processor status history
-        final StatusHistoryDTO connectionStatusHistory = serviceFacade.getConnectionStatusHistory(groupId, id);
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // generate the response entity
-        final StatusHistoryEntity entity = new StatusHistoryEntity();
-        entity.setRevision(revision);
-        entity.setStatusHistory(connectionStatusHistory);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Creates a connection.
-     *
-     * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param name The name of the connection.
-     * @param sourceId The id of the source connectable.
-     * @param sourceGroupId The parent group id for the source.
-     * @param sourceType The type of the source connectable.
-     * @param bends Array of bend points in string form ["x,y", "x,y", "x,y"]
-     * @param relationships Array of relationships.
-     * @param flowFileExpiration The flow file expiration in minutes
-     * @param backPressureObjectThreshold The object count for when to apply back pressure.
-     * @param backPressureDataSizeThreshold The object size for when to apply back pressure.
-     * @param prioritizers Array of prioritizer types. These types should refer to one of the types in the GET /controller/prioritizers response. If this parameter is not specified no change will be
-     * made. If this parameter appears with no value (empty string), it will be treated as an empty array.
-     * @param destinationId The id of the destination connectable.
-     * @param destinationGroupId The parent group id for the destination.
-     * @param destinationType The type of the destination connectable.
-     * @param formParams params
-     * @return A connectionEntity.
-     */
-    @POST
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("") // necessary due to bug in swagger
-    @PreAuthorize("hasRole('ROLE_DFM')")
-    public Response createConnection(
-            @Context HttpServletRequest httpServletRequest,
-            @FormParam(VERSION) LongParameter version,
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @FormParam("name") String name,
-            @FormParam("sourceId") String sourceId,
-            @FormParam("sourceGroupId") String sourceGroupId,
-            @FormParam("sourceType") ConnectableTypeParameter sourceType,
-            @FormParam("relationships[]") Set<String> relationships,
-            @FormParam("bends[]") List<String> bends,
-            @FormParam("flowFileExpiration") String flowFileExpiration,
-            @FormParam("backPressureObjectThreshold") LongParameter backPressureObjectThreshold,
-            @FormParam("backPressureDataSizeThreshold") String backPressureDataSizeThreshold,
-            @FormParam("prioritizers[]") List<String> prioritizers,
-            @FormParam("destinationId") String destinationId,
-            @FormParam("destinationGroupId") String destinationGroupId,
-            @FormParam("destinationType") ConnectableTypeParameter destinationType,
-            MultivaluedMap<String, String> formParams) {
-
-        if (sourceId == null || sourceGroupId == null || destinationId == null || destinationGroupId == null) {
-            throw new IllegalArgumentException("The source and destination (and parent groups) must be specified.");
-        }
-
-        // ensure the source and destination type has been specified
-        if (sourceType == null || destinationType == null) {
-            throw new IllegalArgumentException("The source and destination type must be specified.");
-        }
-
-        // create the source dto
-        final ConnectableDTO source = new ConnectableDTO();
-        source.setId(sourceId);
-        source.setType(sourceType.getConnectableType().name());
-        source.setGroupId(sourceGroupId);
-
-        // create the destination dto
-        final ConnectableDTO destination = new ConnectableDTO();
-        destination.setId(destinationId);
-        destination.setType(destinationType.getConnectableType().name());
-        destination.setGroupId(destinationGroupId);
-
-        // create the connection dto
-        final ConnectionDTO connectionDTO = new ConnectionDTO();
-        connectionDTO.setName(name);
-        connectionDTO.setSource(source);
-        connectionDTO.setDestination(destination);
-
-        // only set the relationships when applicable
-        if (!relationships.isEmpty() || formParams.containsKey("relationships[]")) {
-            connectionDTO.setSelectedRelationships(relationships);
-        }
-
-        connectionDTO.setFlowFileExpiration(flowFileExpiration);
-        connectionDTO.setBackPressureDataSizeThreshold(backPressureDataSizeThreshold);
-
-        if (backPressureObjectThreshold != null) {
-            connectionDTO.setBackPressureObjectThreshold(backPressureObjectThreshold.getLong());
-        }
-
-        // handle the bends when applicable
-        if (!bends.isEmpty() || formParams.containsKey("bends[]")) {
-            final List<PositionDTO> bendPoints = new ArrayList<>(bends.size());
-            for (final String bend : bends) {
-                final String[] coordinate = bend.split(",");
-
-                // ensure the appropriate number of tokens
-                if (coordinate.length != 2) {
-                    throw new IllegalArgumentException("Bend points should be an array where each entry is in the form 'x,y'");
-                }
-
-                // convert the coordinate
-                final Double x;
-                final Double y;
-                try {
-                    x = Double.parseDouble(coordinate[0].trim());
-                    y = Double.parseDouble(coordinate[1].trim());
-                } catch (final NumberFormatException nfe) {
-                    throw new IllegalArgumentException("Bend points should be an array where each entry is in the form 'x,y'");
-                }
-
-                // add the bend point
-                bendPoints.add(new PositionDTO(x, y));
-            }
-
-            // set the bend points
-            connectionDTO.setBends(bendPoints);
-        }
-
-        // create prioritizer list
-        final List<String> prioritizerTypes = new ArrayList<>(prioritizers.size());
-
-        // add each prioritizer specified
-        for (String rawPrioritizer : prioritizers) {
-            // when prioritizers[] is specified in the request with no value, it creates an array
-            // with a single element (empty string). an empty array is created when prioritizers[]
-            // is not found in the request
-            if (StringUtils.isNotBlank(rawPrioritizer)) {
-                prioritizerTypes.add(rawPrioritizer);
-            }
-        }
-
-        // only set the prioritizers when appropriate
-        if (!prioritizerTypes.isEmpty() || formParams.containsKey("prioritizers[]")) {
-            connectionDTO.setPrioritizers(prioritizerTypes);
-        }
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        if (version != null) {
-            revision.setVersion(version.getLong());
-        }
-
-        // create the connection entity
-        final ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(revision);
-        entity.setConnection(connectionDTO);
-
-        // create the relationship target
-        return createConnection(httpServletRequest, entity);
-    }
-
-    /**
-     * Creates a new connection.
-     *
-     * @param httpServletRequest request
-     * @param connectionEntity A connectionEntity.
-     * @return A connectionEntity.
-     */
-    @POST
-    @Consumes({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("") // necessary due to bug in swagger
-    @PreAuthorize("hasRole('ROLE_DFM')")
-    @ApiOperation(
-            value = "Creates a connection",
-            response = ConnectionEntity.class,
-            authorizations = {
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response createConnection(
-            @Context HttpServletRequest httpServletRequest,
-            @ApiParam(
-                    value = "The connection configuration details.",
-                    required = true
-            )
-            ConnectionEntity connectionEntity) {
-
-        if (connectionEntity == null || connectionEntity.getConnection() == null) {
-            throw new IllegalArgumentException("Connection details must be specified.");
-        }
-
-        if (connectionEntity.getConnection().getId() != null) {
-            throw new IllegalArgumentException("Connection ID cannot be specified.");
-        }
-
-        if (connectionEntity.getRevision() == null) {
-            throw new IllegalArgumentException("Revision must be specified.");
-        }
-
-        // if cluster manager, convert POST to PUT (to maintain same ID across nodes) and replicate
-        if (properties.isClusterManager()) {
-
-            // create ID for resource
-            final String id = UUID.randomUUID().toString();
-
-            // set ID for resource
-            connectionEntity.getConnection().setId(id);
-
-            // convert POST request to PUT request to force entity ID to be the same across nodes
-            URI putUri = null;
-            try {
-                putUri = new URI(getAbsolutePath().toString() + "/" + id);
-            } catch (final URISyntaxException e) {
-                throw new WebApplicationException(e);
-            }
-
-            // change content type to JSON for serializing entity
-            final Map<String, String> headersToOverride = new HashMap<>();
-            headersToOverride.put("content-type", MediaType.APPLICATION_JSON);
-
-            // replicate put request
-            return (Response) clusterManager.applyRequest(HttpMethod.PUT, putUri, updateClientId(connectionEntity), getHeaders(headersToOverride)).getResponse();
-        }
-
-        // get the connection
-        final ConnectionDTO connection = connectionEntity.getConnection();
-
-        // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
-        if (expects != null) {
-            serviceFacade.verifyCreateConnection(groupId, connection);
-            return generateContinueResponse().build();
-        }
-
-        // create the new relationship target
-        final RevisionDTO revision = connectionEntity.getRevision();
-        final ConfigurationSnapshot<ConnectionDTO> controllerResponse = serviceFacade.createConnection(
-                new Revision(revision.getVersion(), revision.getClientId()), groupId, connection);
-        ConnectionDTO connectionDTO = controllerResponse.getConfiguration();
-
-        // marshall the target and add the source processor
-        populateRemainingConnectionContent(connectionDTO);
-
-        // get the updated revision
-        final RevisionDTO updatedRevision = new RevisionDTO();
-        updatedRevision.setClientId(revision.getClientId());
-        updatedRevision.setVersion(controllerResponse.getVersion());
-
-        // create the response entity
-        ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(updatedRevision);
-        entity.setConnection(connectionDTO);
-
-        // extract the href and build the response
-        String href = connectionDTO.getUri();
-
-        return clusterContext(generateCreatedResponse(URI.create(href), entity)).build();
-    }
-
-    /**
-     * Updates the specified relationship target.
-     *
-     * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param connectionId The id of the source processor.
-     * @param name The name of the connection.
-     * @param relationships Array of relationships.
-     * @param bends Array of bend points in string form ["x,y", "x,y", "x,y"]
-     * @param labelIndex The control point index for the connection label
-     * @param zIndex The zIndex for this connection
-     * @param flowFileExpiration The flow file expiration in minutes
-     * @param backPressureObjectThreshold The object count for when to apply back pressure.
-     * @param backPressureDataSizeThreshold The object size for when to apply back pressure.
-     * @param prioritizers Array of prioritizer types. These types should refer to one of the types in the GET /controller/prioritizers response. If this parameter is not specified no change will be
-     * made. If this parameter appears with no value (empty string), it will be treated as an empty array.
-     * @param destinationId The id of the destination connectable.
-     * @param destinationGroupId The group id of the destination.
-     * @param destinationType The type of the destination type.
-     * @param formParams params
-     * @return A connectionEntity.
-     */
-    @PUT
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/{id}")
-    @PreAuthorize("hasRole('ROLE_DFM')")
-    public Response updateConnection(
-            @Context HttpServletRequest httpServletRequest,
-            @FormParam(VERSION) LongParameter version,
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @PathParam("id") String connectionId,
-            @FormParam("name") String name,
-            @FormParam("relationships[]") Set<String> relationships,
-            @FormParam("bends[]") List<String> bends,
-            @FormParam("labelIndex") IntegerParameter labelIndex,
-            @FormParam("zIndex") LongParameter zIndex,
-            @FormParam("flowFileExpiration") String flowFileExpiration,
-            @FormParam("backPressureObjectThreshold") LongParameter backPressureObjectThreshold,
-            @FormParam("backPressureDataSizeThreshold") String backPressureDataSizeThreshold,
-            @FormParam("prioritizers[]") List<String> prioritizers,
-            @FormParam("destinationId") String destinationId,
-            @FormParam("destinationGroupId") String destinationGroupId,
-            @FormParam("destinationType") ConnectableTypeParameter destinationType,
-            MultivaluedMap<String, String> formParams) {
-
-        // create the target connectable if necessary
-        ConnectableDTO destination = null;
-        if (destinationId != null) {
-            if (destinationGroupId == null) {
-                throw new IllegalArgumentException("The destination group must be specified.");
-            }
-
-            if (destinationType == null) {
-                throw new IllegalArgumentException("The destination type must be specified.");
-            }
-
-            destination = new ConnectableDTO();
-            destination.setId(destinationId);
-            destination.setType(destinationType.getConnectableType().name());
-            destination.setGroupId(destinationGroupId);
-        }
-
-        // create the relationship target dto
-        final ConnectionDTO connectionDTO = new ConnectionDTO();
-        connectionDTO.setId(connectionId);
-        connectionDTO.setName(name);
-        connectionDTO.setDestination(destination);
-        if (labelIndex != null) {
-            connectionDTO.setLabelIndex(labelIndex.getInteger());
-        }
-        if (zIndex != null) {
-            connectionDTO.setzIndex(zIndex.getLong());
-        }
-
-        // handle the bends when applicable
-        if (!bends.isEmpty() || formParams.containsKey("bends[]")) {
-            final List<PositionDTO> bendPoints = new ArrayList<>(bends.size());
-            for (final String bend : bends) {
-                final String[] coordinate = bend.split(",");
-
-                // ensure the appropriate number of tokens
-                if (coordinate.length != 2) {
-                    throw new IllegalArgumentException("Bend points should be an array where each entry is in the form 'x,y'");
-                }
-
-                // convert the coordinate
-                final Double x;
-                final Double y;
-                try {
-                    x = Double.parseDouble(coordinate[0].trim());
-                    y = Double.parseDouble(coordinate[1].trim());
-                } catch (final NumberFormatException nfe) {
-                    throw new IllegalArgumentException("Bend points should be an array where each entry is in the form 'x,y'");
-                }
-
-                // add the bend point
-                bendPoints.add(new PositionDTO(x, y));
-            }
-
-            // set the bend points
-            connectionDTO.setBends(bendPoints);
-        }
-
-        // only set the relationships when applicable
-        if (!relationships.isEmpty() || formParams.containsKey("relationships[]")) {
-            connectionDTO.setSelectedRelationships(relationships);
-        }
-
-        connectionDTO.setFlowFileExpiration(flowFileExpiration);
-        connectionDTO.setBackPressureDataSizeThreshold(backPressureDataSizeThreshold);
-
-        if (backPressureObjectThreshold != null) {
-            connectionDTO.setBackPressureObjectThreshold(backPressureObjectThreshold.getLong());
-        }
-
-        // create prioritizer list
-        final List<String> prioritizerTypes = new ArrayList<>(prioritizers.size());
-
-        // add each prioritizer specified
-        for (final String rawPrioritizer : prioritizers) {
-            // when prioritizers[] is specified in the request with no value, it creates an array
-            // with a single element (empty string). an empty array is created when prioritizers[]
-            // is not found in the request
-            if (StringUtils.isNotBlank(rawPrioritizer)) {
-                prioritizerTypes.add(rawPrioritizer);
-            }
-        }
-
-        // only set the prioritizers when appropriate
-        if (!prioritizerTypes.isEmpty() || formParams.containsKey("prioritizers[]")) {
-            connectionDTO.setPrioritizers(prioritizerTypes);
-        }
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        if (version != null) {
-            revision.setVersion(version.getLong());
-        }
-
-        // create the connection entity
-        final ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(revision);
-        entity.setConnection(connectionDTO);
-
-        // update the relationship target
-        return updateConnection(httpServletRequest, connectionId, entity);
     }
 
     /**
      * Updates the specified connection.
      *
      * @param httpServletRequest request
-     * @param id The id of the connection.
-     * @param connectionEntity A connectionEntity.
+     * @param id                 The id of the connection.
+     * @param requestConnectionEntity   A connectionEntity.
      * @return A connectionEntity.
+     * @throws InterruptedException if interrupted
      */
     @PUT
-    @Consumes({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
     @Path("/{id}")
-    @PreAuthorize("hasRole('ROLE_DFM')")
     @ApiOperation(
             value = "Updates a connection",
             response = ConnectionEntity.class,
             authorizations = {
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM")
+                    @Authorization(value = "Write Source - /{component-type}/{uuid}", type = ""),
+                    @Authorization(value = "Write Destination - /{component-type}/{uuid}", type = ""),
+                    @Authorization(value = "Write New Destination - /{component-type}/{uuid} - if updating Destination", type = ""),
+                    @Authorization(value = "Write Process Group - /process-groups/{uuid} - if updating Destination", type = "")
             }
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
     public Response updateConnection(
@@ -738,152 +184,183 @@ public class ConnectionResource extends ApplicationResource {
                     value = "The connection id.",
                     required = true
             )
-            @PathParam("id") String id,
+            @PathParam("id") final String id,
             @ApiParam(
                     value = "The connection configuration details.",
                     required = true
-            ) ConnectionEntity connectionEntity) {
+            ) final ConnectionEntity requestConnectionEntity) throws InterruptedException {
 
-        if (connectionEntity == null || connectionEntity.getConnection() == null) {
+        if (requestConnectionEntity == null || requestConnectionEntity.getComponent() == null) {
             throw new IllegalArgumentException("Connection details must be specified.");
         }
 
-        if (connectionEntity.getRevision() == null) {
+        if (requestConnectionEntity.getRevision() == null) {
             throw new IllegalArgumentException("Revision must be specified.");
         }
 
         // ensure the ids are the same
-        final ConnectionDTO connection = connectionEntity.getConnection();
-        if (!id.equals(connection.getId())) {
+        final ConnectionDTO requestConnection = requestConnectionEntity.getComponent();
+        if (!id.equals(requestConnection.getId())) {
             throw new IllegalArgumentException(String.format("The connection id "
                     + "(%s) in the request body does not equal the connection id of the "
-                    + "requested resource (%s).", connection.getId(), id));
+                    + "requested resource (%s).", requestConnection.getId(), id));
         }
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            // change content type to JSON for serializing entity
-            final Map<String, String> headersToOverride = new HashMap<>();
-            headersToOverride.put("content-type", MediaType.APPLICATION_JSON);
+        if (requestConnection.getDestination() != null) {
+            if (requestConnection.getDestination().getId() == null) {
+                throw new IllegalArgumentException("When specifying a destination component, the destination id is required.");
+            }
 
-            // replicate the request
-            return clusterManager.applyRequest(HttpMethod.PUT, getAbsolutePath(), updateClientId(connectionEntity), getHeaders(headersToOverride)).getResponse();
+            if (requestConnection.getDestination().getType() == null) {
+                throw new IllegalArgumentException("When specifying a destination component, the type of the destination is required.");
+            }
         }
 
-        // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
-        if (expects != null) {
-            serviceFacade.verifyUpdateConnection(groupId, connection);
-            return generateContinueResponse().build();
+        final List<PositionDTO> proposedBends = requestConnection.getBends();
+        if (proposedBends != null) {
+            for (final PositionDTO proposedBend : proposedBends) {
+                if (proposedBend.getX() == null || proposedBend.getY() == null) {
+                    throw new IllegalArgumentException("The x and y coordinate of the each bend must be specified.");
+                }
+            }
         }
 
-        // update the relationship target
-        final RevisionDTO revision = connectionEntity.getRevision();
-        final ConfigurationSnapshot<ConnectionDTO> controllerResponse = serviceFacade.updateConnection(
-                new Revision(revision.getVersion(), revision.getClientId()), groupId, connection);
-
-        // get the updated revision
-        final RevisionDTO updatedRevision = new RevisionDTO();
-        updatedRevision.setClientId(revision.getClientId());
-        updatedRevision.setVersion(controllerResponse.getVersion());
-
-        // marshall the target and add the source processor
-        final ConnectionDTO connectionDTO = controllerResponse.getConfiguration();
-        populateRemainingConnectionContent(connectionDTO);
-
-        // create the response entity
-        ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(updatedRevision);
-        entity.setConnection(connectionDTO);
-
-        // generate the response
-        if (controllerResponse.isNew()) {
-            return clusterContext(generateCreatedResponse(URI.create(connectionDTO.getUri()), entity)).build();
-        } else {
-            return clusterContext(generateOkResponse(entity)).build();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.PUT, requestConnectionEntity);
         }
+
+        final Revision requestRevision = getRevision(requestConnectionEntity, id);
+        return withWriteLock(
+                serviceFacade,
+                requestConnectionEntity,
+                requestRevision,
+                lookup -> {
+                    // verifies write access to this connection (this checks the current source and destination)
+                    ConnectionAuthorizable connAuth = lookup.getConnection(id);
+                    connAuth.getAuthorizable().authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
+
+                    // if a destination has been specified and is different
+                    final Connectable currentDestination = connAuth.getDestination();
+                    if (requestConnection.getDestination() != null && !currentDestination.getIdentifier().equals(requestConnection.getDestination().getId())) {
+                        try {
+                            final ConnectableType destinationConnectableType = ConnectableType.valueOf(requestConnection.getDestination().getType());
+
+                            // explicitly handle RPGs differently as the connectable id can be ambiguous if self referencing
+                            final Authorizable newDestinationAuthorizable;
+                            if (ConnectableType.REMOTE_INPUT_PORT.equals(destinationConnectableType)) {
+                                newDestinationAuthorizable = lookup.getRemoteProcessGroup(requestConnection.getDestination().getGroupId());
+                            } else {
+                                newDestinationAuthorizable = lookup.getLocalConnectable(requestConnection.getDestination().getId());
+                            }
+
+                            // verify access of the new destination (current destination was already authorized as part of the connection check)
+                            newDestinationAuthorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
+                        } catch (final IllegalArgumentException e) {
+                            throw new IllegalArgumentException(String.format("Unrecognized destination type %s. Excepted values are [%s]",
+                                    requestConnection.getDestination().getType(), StringUtils.join(ConnectableType.values(), ", ")));
+                        }
+
+                        // verify access of the parent group (this is the same check that is performed when creating the connection)
+                        connAuth.getParentGroup().authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
+                    }
+                },
+                () -> serviceFacade.verifyUpdateConnection(requestConnection),
+                (revision, connectionEntity) -> {
+                    final ConnectionDTO connection = connectionEntity.getComponent();
+
+                    final ConnectionEntity entity = serviceFacade.updateConnection(revision, connection);
+                    populateRemainingConnectionEntityContent(entity);
+
+                    // generate the response
+                    return clusterContext(generateOkResponse(entity)).build();
+                });
     }
 
     /**
      * Removes the specified connection.
      *
      * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param id The id of the connection.
+     * @param version            The revision is used to verify the client is working with the latest version of the flow.
+     * @param clientId           Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
+     * @param id                 The id of the connection.
      * @return An Entity containing the client id and an updated revision.
+     * @throws InterruptedException if interrupted
      */
     @DELETE
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    @Produces(MediaType.APPLICATION_JSON)
     @Path("/{id}")
-    @PreAuthorize("hasRole('ROLE_DFM')")
     @ApiOperation(
             value = "Deletes a connection",
             response = ConnectionEntity.class,
             authorizations = {
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM")
+                    @Authorization(value = "Write Source - /{component-type}/{uuid}", type = ""),
+                    @Authorization(value = "Write - Parent Process Group - /process-groups/{uuid}", type = ""),
+                    @Authorization(value = "Write Destination - /{component-type}/{uuid}", type = "")
             }
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response deleteRelationshipTarget(
+    public Response deleteConnection(
             @Context HttpServletRequest httpServletRequest,
             @ApiParam(
                     value = "The revision is used to verify the client is working with the latest version of the flow.",
                     required = false
             )
-            @QueryParam(VERSION) LongParameter version,
+            @QueryParam(VERSION) final LongParameter version,
             @ApiParam(
                     value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
                     required = false
             )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
+            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) final ClientIdParameter clientId,
             @ApiParam(
                     value = "The connection id.",
                     required = true
             )
-            @PathParam("id") String id) {
+            @PathParam("id") final String id) throws InterruptedException {
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.DELETE, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
-        if (expects != null) {
-            serviceFacade.verifyDeleteConnection(groupId, id);
-            return generateContinueResponse().build();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.DELETE);
         }
 
         // determine the specified version
-        Long clientVersion = null;
-        if (version != null) {
-            clientVersion = version.getLong();
-        }
+        final Long clientVersion = version == null ? null : version.getLong();
+        final Revision requestRevision = new Revision(clientVersion, clientId.getClientId(), id);
 
-        // delete the connection
-        final ConfigurationSnapshot<Void> controllerResponse = serviceFacade.deleteConnection(new Revision(clientVersion, clientId.getClientId()), groupId, id);
+        final ConnectionEntity requestConnectionEntity = new ConnectionEntity();
+        requestConnectionEntity.setId(id);
 
-        // create the revision
-        final RevisionDTO updatedRevision = new RevisionDTO();
-        updatedRevision.setClientId(clientId.getClientId());
-        updatedRevision.setVersion(controllerResponse.getVersion());
+        // get the current user
+        return withWriteLock(
+                serviceFacade,
+                requestConnectionEntity,
+                requestRevision,
+                lookup -> {
+                    // verifies write access to the source and destination
+                    final Authorizable authorizable = lookup.getConnection(id).getAuthorizable();
 
-        // create the response entity
-        final ConnectionEntity entity = new ConnectionEntity();
-        entity.setRevision(updatedRevision);
+                    // ensure write permission to the connection
+                    authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
 
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
+                    // ensure write permission to the parent process group
+                    authorizable.getParentAuthorizable().authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
+                },
+                () -> serviceFacade.verifyDeleteConnection(id),
+                (revision, connectionEntity) -> {
+                    // delete the connection
+                    final ConnectionEntity entity = serviceFacade.deleteConnection(revision, connectionEntity.getId());
+
+                    // generate the response
+                    return clusterContext(generateOkResponse(entity)).build();
+                }
+        );
     }
 
     // setters
@@ -891,15 +368,7 @@ public class ConnectionResource extends ApplicationResource {
         this.serviceFacade = serviceFacade;
     }
 
-    public void setGroupId(String groupId) {
-        this.groupId = groupId;
-    }
-
-    public void setClusterManager(WebClusterManager clusterManager) {
-        this.clusterManager = clusterManager;
-    }
-
-    public void setProperties(NiFiProperties properties) {
-        this.properties = properties;
+    public void setAuthorizer(Authorizer authorizer) {
+        this.authorizer = authorizer;
     }
 }

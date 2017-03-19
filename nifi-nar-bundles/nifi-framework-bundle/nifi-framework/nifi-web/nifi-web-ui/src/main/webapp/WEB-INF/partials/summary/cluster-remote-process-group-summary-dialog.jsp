@@ -15,22 +15,24 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="cluster-remote-process-group-summary-dialog">
+<div id="cluster-remote-process-group-summary-dialog" class="hidden large-dialog">
     <div class="dialog-content">
         <div id="cluster-remote-process-group-summary-header">
-            <div id="cluster-remote-process-group-refresh-button" class="summary-refresh pointer" title="Refresh"></div>
-            <div id="cluster-remote-process-group-summary-last-refreshed-container">
-                Last updated:&nbsp;<span id="cluster-remote-process-group-summary-last-refreshed"></span>
-            </div>
-            <div id="cluster-remote-process-group-summary-loading-container" class="loading-container"></div>
             <div id="cluster-remote-process-group-details-container">
                 <div id="cluster-remote-process-group-icon"></div>
                 <div id="cluster-remote-process-group-details">
                     <div id="cluster-remote-process-group-name"></div>
-                    <div id="cluster-remote-process-group-id"></div>
+                    <div id="cluster-remote-process-group-type"></div>
+                    <div id="cluster-remote-process-group-group-id" class="hidden"></div>
                 </div>
+                <div id="cluster-remote-process-group-id"></div>
             </div>
         </div>
         <div id="cluster-remote-process-group-summary-table"></div>
     </div>
+    <button id="cluster-remote-process-group-refresh-button" class="refresh-button pointer fa fa-refresh" title="Refresh"></button>
+    <div id="cluster-remote-process-group-summary-last-refreshed-container" class="last-refreshed-container">
+        Last updated:&nbsp;<span id="cluster-remote-process-group-summary-last-refreshed" class="value-color"></span>
+    </div>
+    <div id="cluster-remote-process-group-summary-loading-container" class="loading-container"></div>
 </div>

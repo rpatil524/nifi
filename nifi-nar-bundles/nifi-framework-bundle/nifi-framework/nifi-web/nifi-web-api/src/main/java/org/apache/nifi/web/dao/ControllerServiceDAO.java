@@ -17,10 +17,12 @@
 package org.apache.nifi.web.dao;
 
 import java.util.Set;
-import org.apache.nifi.controller.ScheduledState;
 
+import org.apache.nifi.components.state.Scope;
+import org.apache.nifi.components.state.StateMap;
+import org.apache.nifi.controller.ConfiguredComponent;
+import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.controller.service.ControllerServiceNode;
-import org.apache.nifi.controller.service.ControllerServiceReference;
 import org.apache.nifi.controller.service.ControllerServiceState;
 import org.apache.nifi.web.api.dto.ControllerServiceDTO;
 
@@ -49,11 +51,12 @@ public interface ControllerServiceDAO {
     ControllerServiceNode getControllerService(String controllerServiceId);
 
     /**
-     * Gets all of the controller services.
+     * Gets all of the controller services for the group with the given ID or all
+     * controller-level services if the group id is null
      *
      * @return The controller services
      */
-    Set<ControllerServiceNode> getControllerServices();
+    Set<ControllerServiceNode> getControllerServices(String groupId);
 
     /**
      * Updates the specified controller service.
@@ -69,9 +72,9 @@ public interface ControllerServiceDAO {
      * @param controllerServiceId service id
      * @param scheduledState scheduled state
      * @param controllerServiceState the value of state
-     * @return the org.apache.nifi.controller.service.ControllerServiceReference
+     * @return the set of all components that were modified as a result of this action
      */
-    ControllerServiceReference updateControllerServiceReferencingComponents(String controllerServiceId, ScheduledState scheduledState, ControllerServiceState controllerServiceState);
+    Set<ConfiguredComponent> updateControllerServiceReferencingComponents(String controllerServiceId, ScheduledState scheduledState, ControllerServiceState controllerServiceState);
 
     /**
      * Determines whether this controller service can be updated.
@@ -102,4 +105,26 @@ public interface ControllerServiceDAO {
      * @param controllerServiceId The controller service id
      */
     void deleteControllerService(String controllerServiceId);
+
+    /**
+     * Gets the specified controller service.
+     *
+     * @param controllerServiceId controller service id
+     * @return state map
+     */
+    StateMap getState(String controllerServiceId, Scope scope);
+
+    /**
+     * Verifies the controller service can clear state.
+     *
+     * @param controllerServiceId controller service id
+     */
+    void verifyClearState(String controllerServiceId);
+
+    /**
+     * Clears the state of the specified controller service.
+     *
+     * @param controllerServiceId controller service id
+     */
+    void clearState(String controllerServiceId);
 }

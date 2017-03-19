@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLDecoder;
 import java.security.Principal;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -34,21 +35,22 @@ import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
-
-import javax.security.cert.X509Certificate;
 import javax.servlet.AsyncContext;
+import javax.servlet.DispatcherType;
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
 import org.apache.nifi.components.AllowableValue;
@@ -61,6 +63,7 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.processors.standard.util.HTTPUtils;
 import org.apache.nifi.ssl.SSLContextService;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.HttpConfiguration;
@@ -72,27 +75,29 @@ import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
-
 import com.sun.jersey.api.client.ClientResponse.Status;
 
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
 @Tags({"http", "https", "request", "listen", "ingress", "web service"})
 @CapabilityDescription("Starts an HTTP Server and listens for HTTP Requests. For each request, creates a FlowFile and transfers to 'success'. "
         + "This Processor is designed to be used in conjunction with the HandleHttpResponse Processor in order to create a Web Service")
 @WritesAttributes({
-    @WritesAttribute(attribute = "http.context.identifier", description = "An identifier that allows the HandleHttpRequest and HandleHttpResponse "
+    @WritesAttribute(attribute = HTTPUtils.HTTP_CONTEXT_ID, description = "An identifier that allows the HandleHttpRequest and HandleHttpResponse "
             + "to coordinate which FlowFile belongs to which HTTP Request/Response."),
     @WritesAttribute(attribute = "mime.type", description = "The MIME Type of the data, according to the HTTP Header \"Content-Type\""),
     @WritesAttribute(attribute = "http.servlet.path", description = "The part of the request URL that is considered the Servlet Path"),
     @WritesAttribute(attribute = "http.context.path", description = "The part of the request URL that is considered to be the Context Path"),
     @WritesAttribute(attribute = "http.method", description = "The HTTP Method that was used for the request, such as GET or POST"),
+    @WritesAttribute(attribute = HTTPUtils.HTTP_LOCAL_NAME, description = "IP address/hostname of the server"),
+    @WritesAttribute(attribute = HTTPUtils.HTTP_PORT, description = "Listening port of the server"),
     @WritesAttribute(attribute = "http.query.string", description = "The query string portion of hte Request URL"),
-    @WritesAttribute(attribute = "http.remote.host", description = "The hostname of the requestor"),
+    @WritesAttribute(attribute = HTTPUtils.HTTP_REMOTE_HOST, description = "The hostname of the requestor"),
     @WritesAttribute(attribute = "http.remote.addr", description = "The hostname:port combination of the requestor"),
     @WritesAttribute(attribute = "http.remote.user", description = "The username of the requestor"),
-    @WritesAttribute(attribute = "http.request.uri", description = "The full Request URL"),
+    @WritesAttribute(attribute = HTTPUtils.HTTP_REQUEST_URI, description = "The full Request URL"),
     @WritesAttribute(attribute = "http.auth.type", description = "The type of HTTP Authorization used"),
     @WritesAttribute(attribute = "http.principal.name", description = "The name of the authenticated user making the request"),
-    @WritesAttribute(attribute = "http.subject.dn", description = "The Distinguished Name of the requestor. This value will not be populated "
+    @WritesAttribute(attribute = HTTPUtils.HTTP_SSL_CERT, description = "The Distinguished Name of the requestor. This value will not be populated "
             + "unless the Processor is configured to use an SSLContext Service"),
     @WritesAttribute(attribute = "http.issuer.dn", description = "The Distinguished Name of the entity that issued the Subject's certificate. "
             + "This value will not be populated unless the Processor is configured to use an SSLContext Service"),
@@ -103,7 +108,6 @@ import com.sun.jersey.api.client.ClientResponse.Status;
         classNames = {"org.apache.nifi.http.StandardHttpContextMap", "org.apache.nifi.ssl.StandardSSLContextService"})
 public class HandleHttpRequest extends AbstractProcessor {
 
-    public static final String HTTP_CONTEXT_ID = "http.context.identifier";
     private static final Pattern URL_QUERY_PARAM_DELIMITER = Pattern.compile("&");
 
     // Allowable values for client auth
@@ -216,18 +220,20 @@ public class HandleHttpRequest extends AbstractProcessor {
             .allowableValues(CLIENT_NONE, CLIENT_WANT, CLIENT_NEED)
             .defaultValue(CLIENT_NONE.getValue())
             .build();
+    public static final PropertyDescriptor CONTAINER_QUEUE_SIZE = new PropertyDescriptor.Builder()
+            .name("container-queue-size").displayName("Container Queue Size")
+            .description("The size of the queue for Http Request Containers").required(true)
+            .addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR).defaultValue("50").build();
 
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
             .name("success")
             .description("All content that is received is routed to the 'success' relationship")
             .build();
 
-    private volatile Server server;
-    private final BlockingQueue<HttpRequestContainer> containerQueue = new LinkedBlockingQueue<>(50);
+    private static final List<PropertyDescriptor> propertyDescriptors;
 
-    @Override
-    protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
-        final List<PropertyDescriptor> descriptors = new ArrayList<>();
+    static {
+        List<PropertyDescriptor> descriptors = new ArrayList<>();
         descriptors.add(PORT);
         descriptors.add(HOSTNAME);
         descriptors.add(SSL_CONTEXT);
@@ -242,8 +248,17 @@ public class HandleHttpRequest extends AbstractProcessor {
         descriptors.add(ALLOW_OPTIONS);
         descriptors.add(ADDITIONAL_METHODS);
         descriptors.add(CLIENT_AUTH);
+        descriptors.add(CONTAINER_QUEUE_SIZE);
+        propertyDescriptors = Collections.unmodifiableList(descriptors);
+    }
 
-        return descriptors;
+    private volatile Server server;
+    private AtomicBoolean initialized = new AtomicBoolean(false);
+    private volatile BlockingQueue<HttpRequestContainer> containerQueue;
+
+    @Override
+    protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
+        return propertyDescriptors;
     }
 
     @Override
@@ -252,7 +267,15 @@ public class HandleHttpRequest extends AbstractProcessor {
     }
 
     @OnScheduled
-    public void initializeServer(final ProcessContext context) throws Exception {
+    public void clearInit(){
+        initialized.set(false);
+    }
+
+    private synchronized void initializeServer(final ProcessContext context) throws Exception {
+        if(initialized.get()){
+            return;
+        }
+        this.containerQueue = new LinkedBlockingQueue<>(context.getProperty(CONTAINER_QUEUE_SIZE).asInteger());
         final String host = context.getProperty(HOSTNAME).getValue();
         final int port = context.getProperty(PORT).asInteger();
         final SSLContextService sslService = context.getProperty(SSL_CONTEXT).asControllerService(SSLContextService.class);
@@ -379,6 +402,7 @@ public class HandleHttpRequest extends AbstractProcessor {
                 // Right now, that information, though, is only in the ProcessSession, not the ProcessContext,
                 // so it is not known to us. Should see if it can be added to the ProcessContext.
                 final AsyncContext async = baseRequest.startAsync();
+                async.setTimeout(Long.MAX_VALUE); // timeout is handled by HttpContextMap
                 final boolean added = containerQueue.offer(new HttpRequestContainer(request, response, async));
 
                 if (added) {
@@ -399,6 +423,8 @@ public class HandleHttpRequest extends AbstractProcessor {
         server.start();
 
         getLogger().info("Server started and listening on port " + getPort());
+
+        initialized.set(true);
     }
 
     protected int getPort() {
@@ -449,6 +475,15 @@ public class HandleHttpRequest extends AbstractProcessor {
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
+        try {
+            if(!initialized.get()) {
+                initializeServer(context);
+            }
+        } catch (Exception e) {
+            context.yield();
+            throw new ProcessException("Failed to initialize the server",e);
+        }
+
         final HttpRequestContainer container = containerQueue.poll();
         if (container == null) {
             return;
@@ -471,31 +506,33 @@ public class HandleHttpRequest extends AbstractProcessor {
         final String contextIdentifier = UUID.randomUUID().toString();
         final Map<String, String> attributes = new HashMap<>();
         try {
-            putAttribute(attributes, HTTP_CONTEXT_ID, contextIdentifier);
+            putAttribute(attributes, HTTPUtils.HTTP_CONTEXT_ID, contextIdentifier);
             putAttribute(attributes, "mime.type", request.getContentType());
             putAttribute(attributes, "http.servlet.path", request.getServletPath());
             putAttribute(attributes, "http.context.path", request.getContextPath());
             putAttribute(attributes, "http.method", request.getMethod());
             putAttribute(attributes, "http.local.addr", request.getLocalAddr());
-            putAttribute(attributes, "http.local.name", request.getLocalName());
-            if (request.getQueryString() != null) {
-                putAttribute(attributes, "http.query.string", URLDecoder.decode(request.getQueryString(), charset));
+            putAttribute(attributes, HTTPUtils.HTTP_LOCAL_NAME, request.getLocalName());
+            final String queryString = request.getQueryString();
+            if (queryString != null) {
+                putAttribute(attributes, "http.query.string", URLDecoder.decode(queryString, charset));
             }
-            putAttribute(attributes, "http.remote.host", request.getRemoteHost());
+            putAttribute(attributes, HTTPUtils.HTTP_REMOTE_HOST, request.getRemoteHost());
             putAttribute(attributes, "http.remote.addr", request.getRemoteAddr());
             putAttribute(attributes, "http.remote.user", request.getRemoteUser());
-            putAttribute(attributes, "http.request.uri", request.getRequestURI());
+            putAttribute(attributes, HTTPUtils.HTTP_REQUEST_URI, request.getRequestURI());
             putAttribute(attributes, "http.request.url", request.getRequestURL().toString());
             putAttribute(attributes, "http.auth.type", request.getAuthType());
 
             putAttribute(attributes, "http.requested.session.id", request.getRequestedSessionId());
-            if (request.getDispatcherType() != null) {
-                putAttribute(attributes, "http.dispatcher.type", request.getDispatcherType().name());
+            final DispatcherType dispatcherType = request.getDispatcherType();
+            if (dispatcherType != null) {
+                putAttribute(attributes, "http.dispatcher.type", dispatcherType.name());
             }
             putAttribute(attributes, "http.character.encoding", request.getCharacterEncoding());
             putAttribute(attributes, "http.locale", request.getLocale());
             putAttribute(attributes, "http.server.name", request.getServerName());
-            putAttribute(attributes, "http.server.port", request.getServerPort());
+            putAttribute(attributes, HTTPUtils.HTTP_PORT, request.getServerPort());
 
             final Enumeration<String> paramEnumeration = request.getParameterNames();
             while (paramEnumeration.hasMoreElements()) {
@@ -518,7 +555,6 @@ public class HandleHttpRequest extends AbstractProcessor {
                 }
             }
 
-            final String queryString = request.getQueryString();
             if (queryString != null) {
                 final String[] params = URL_QUERY_PARAM_DELIMITER.split(queryString);
                 for (final String keyValueString : params) {
@@ -563,7 +599,7 @@ public class HandleHttpRequest extends AbstractProcessor {
             subjectDn = cert.getSubjectDN().getName();
             final String issuerDn = cert.getIssuerDN().getName();
 
-            putAttribute(attributes, "http.subject.dn", subjectDn);
+            putAttribute(attributes, HTTPUtils.HTTP_SSL_CERT, subjectDn);
             putAttribute(attributes, "http.issuer.dn", issuerDn);
         } else {
             subjectDn = null;
@@ -587,11 +623,12 @@ public class HandleHttpRequest extends AbstractProcessor {
                         new Object[]{request.getRemoteAddr(), e});
             }
 
+            session.remove(flowFile);
             return;
         }
 
         final long receiveMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        session.getProvenanceReporter().receive(flowFile, request.getRequestURI(), "Received from " + request.getRemoteAddr() + (subjectDn == null ? "" : " with DN=" + subjectDn), receiveMillis);
+        session.getProvenanceReporter().receive(flowFile, HTTPUtils.getURI(attributes), "Received from " + request.getRemoteAddr() + (subjectDn == null ? "" : " with DN=" + subjectDn), receiveMillis);
         session.transfer(flowFile, REL_SUCCESS);
         getLogger().info("Transferring {} to 'success'; received from {}", new Object[]{flowFile, request.getRemoteAddr()});
     }

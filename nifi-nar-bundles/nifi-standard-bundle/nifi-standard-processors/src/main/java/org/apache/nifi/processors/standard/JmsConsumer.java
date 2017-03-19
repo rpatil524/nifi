@@ -25,6 +25,7 @@ import static org.apache.nifi.processors.standard.util.JmsProperties.JMS_PROPS_T
 import static org.apache.nifi.processors.standard.util.JmsProperties.JMS_PROVIDER;
 import static org.apache.nifi.processors.standard.util.JmsProperties.MESSAGE_SELECTOR;
 import static org.apache.nifi.processors.standard.util.JmsProperties.PASSWORD;
+import static org.apache.nifi.processors.standard.util.JmsProperties.SSL_CONTEXT_SERVICE;
 import static org.apache.nifi.processors.standard.util.JmsProperties.TIMEOUT;
 import static org.apache.nifi.processors.standard.util.JmsProperties.URL;
 import static org.apache.nifi.processors.standard.util.JmsProperties.USERNAME;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.jms.JMSException;
 import javax.jms.MapMessage;
@@ -48,7 +50,7 @@ import javax.jms.MessageConsumer;
 
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -59,7 +61,6 @@ import org.apache.nifi.processors.standard.util.JmsFactory;
 import org.apache.nifi.processors.standard.util.JmsProcessingSummary;
 import org.apache.nifi.processors.standard.util.WrappedMessageConsumer;
 import org.apache.nifi.stream.io.BufferedOutputStream;
-import org.apache.nifi.util.IntegerHolder;
 import org.apache.nifi.util.StopWatch;
 
 public abstract class JmsConsumer extends AbstractProcessor {
@@ -87,6 +88,7 @@ public abstract class JmsConsumer extends AbstractProcessor {
         descriptors.add(BATCH_SIZE);
         descriptors.add(USERNAME);
         descriptors.add(PASSWORD);
+        descriptors.add(SSL_CONTEXT_SERVICE);
         descriptors.add(ACKNOWLEDGEMENT_MODE);
         descriptors.add(MESSAGE_SELECTOR);
         descriptors.add(JMS_PROPS_TO_ATTRIBUTES);
@@ -105,7 +107,7 @@ public abstract class JmsConsumer extends AbstractProcessor {
     }
 
     public void consume(final ProcessContext context, final ProcessSession session, final WrappedMessageConsumer wrappedConsumer) throws ProcessException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         final MessageConsumer consumer = wrappedConsumer.getConsumer();
         final boolean clientAcknowledge = context.getProperty(ACKNOWLEDGEMENT_MODE).getValue().equalsIgnoreCase(ACK_MODE_CLIENT);
@@ -156,8 +158,8 @@ public abstract class JmsConsumer extends AbstractProcessor {
 
         stopWatch.stop();
         if (processingSummary.getFlowFilesCreated() > 0) {
-            final float secs = ((float) stopWatch.getDuration(TimeUnit.MILLISECONDS) / 1000F);
-            float messagesPerSec = ((float) processingSummary.getMessagesReceived()) / secs;
+            final float secs = (stopWatch.getDuration(TimeUnit.MILLISECONDS) / 1000F);
+            float messagesPerSec = (processingSummary.getMessagesReceived()) / secs;
             final String dataRate = stopWatch.calculateDataRate(processingSummary.getBytesReceived());
             logger.info("Received {} messages in {} milliseconds, at a rate of {} messages/sec or {}",
                     new Object[]{processingSummary.getMessagesReceived(), stopWatch.getDuration(TimeUnit.MILLISECONDS), messagesPerSec, dataRate});
@@ -175,11 +177,11 @@ public abstract class JmsConsumer extends AbstractProcessor {
         }
     }
 
-    public static JmsProcessingSummary map2FlowFile(final ProcessContext context, final ProcessSession session, final Message message, final boolean addAttributes, ProcessorLog logger)
+    public static JmsProcessingSummary map2FlowFile(final ProcessContext context, final ProcessSession session, final Message message, final boolean addAttributes, ComponentLog logger)
             throws Exception {
 
         // Currently not very useful, because always one Message == one FlowFile
-        final IntegerHolder msgsThisFlowFile = new IntegerHolder(1);
+        final AtomicInteger msgsThisFlowFile = new AtomicInteger(1);
 
         FlowFile flowFile = session.create();
         try {
@@ -195,7 +197,7 @@ public abstract class JmsConsumer extends AbstractProcessor {
                             final byte[] messageBody = JmsFactory.createByteArray(message);
                             out.write(messageBody);
                         } catch (final JMSException e) {
-                            throw new ProcessException("Failed to receive JMS Message due to {}", e);
+                            throw new ProcessException("Failed to receive JMS Message due to " + e.getMessage(), e);
                         }
                     }
                 });

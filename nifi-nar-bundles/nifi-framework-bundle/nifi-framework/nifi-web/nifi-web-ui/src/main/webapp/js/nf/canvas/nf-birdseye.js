@@ -15,17 +15,46 @@
  * limitations under the License.
  */
 
-/* global nf, d3 */
+/* global define, module, require, exports */
 
-nf.Birdseye = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'd3',
+                'nf.Common',
+                'nf.CanvasUtils',
+                'nf.ContextMenu',
+                'nf.Label'],
+            function ($, d3, nfCommon, nfCanvasUtils, nfContextMenu, nfLabel) {
+                return (nf.Birdseye = factory($, d3, nfCommon, nfCanvasUtils, nfContextMenu, nfLabel));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.Birdseye =
+            factory(require('jquery'),
+                require('d3'),
+                require('nf.Common'),
+                require('nf.CanvasUtils'),
+                require('nf.ContextMenu'),
+                require('nf.Label')));
+    } else {
+        nf.Birdseye = factory(root.$,
+            root.d3,
+            root.nf.Common,
+            root.nf.CanvasUtils,
+            root.nf.ContextMenu,
+            root.nf.Label);
+    }
+}(this, function ($, d3, nfCommon, nfCanvasUtils, nfContextMenu, nfLabel) {
+    'use strict';
 
+    var nfGraph;
     var birdseyeGroup;
     var componentGroup;
 
     // refreshes the birdseye
     var refresh = function (components) {
-        var translate = nf.Canvas.View.translate();
-        var scale = nf.Canvas.View.scale();
+        var translate = nfCanvasUtils.translateCanvasView();
+        var scale = nfCanvasUtils.scaleCanvasView();
 
         // scale the translation
         translate = [translate[0] / scale, translate[1] / scale];
@@ -33,7 +62,7 @@ nf.Birdseye = (function () {
         // get the bounding box for the graph and convert into canvas space
         var graphBox = d3.select('#canvas').node().getBoundingClientRect();
         var graphLeft = (graphBox.left / scale) - translate[0];
-        var graphTop = ((graphBox.top - nf.Canvas.CANVAS_OFFSET) / scale) - translate[1];
+        var graphTop = ((graphBox.top - nfCanvasUtils.getCanvasOffset()) / scale) - translate[1];
         var graphRight = (graphBox.right / scale) - translate[0];
         var graphBottom = (graphBox.bottom / scale) - translate[1];
 
@@ -119,17 +148,17 @@ nf.Birdseye = (function () {
 
         // update the brush
         d3.select('rect.birdseye-brush')
-                .attr({
-                    'width': screenWidth,
-                    'height': screenHeight,
-                    'stroke-width': (2 / birdseyeScale),
-                    'transform': function (d) {
-                        d.x = brushTranslate[0];
-                        d.y = brushTranslate[1];
+            .attr({
+                'width': screenWidth,
+                'height': screenHeight,
+                'stroke-width': (2 / birdseyeScale),
+                'transform': function (d) {
+                    d.x = brushTranslate[0];
+                    d.y = brushTranslate[1];
 
-                        return 'translate(' + brushTranslate + ')';
-                    }
-                });
+                    return 'translate(' + brushTranslate + ')';
+                }
+            });
 
         // redraw the canvas
         var canvasElement = d3.select('#birdseye-canvas').node();
@@ -149,52 +178,61 @@ nf.Birdseye = (function () {
 
         // labels
         $.each(components.labels, function (_, d) {
-            var color = nf.Label.defaultColor();
+            var color = nfLabel.defaultColor();
 
-            // use the specified color if appropriate
-            if (nf.Common.isDefinedAndNotNull(d.component.style['background-color'])) {
-                color = d.component.style['background-color'];
+            if (d.permissions.canRead) {
+                // use the specified color if appropriate
+                if (nfCommon.isDefinedAndNotNull(d.component.style['background-color'])) {
+                    color = d.component.style['background-color'];
+                }
             }
 
             context.fillStyle = color;
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         // funnels
-        context.fillStyle = '#9f6000';
+        context.fillStyle = '#ad9897';
         $.each(components.funnels, function (_, d) {
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         // ports
-        context.fillStyle = '#aaa';
+        context.fillStyle = '#bbdcde';
         $.each(components.ports, function (_, d) {
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         // remote process groups
-        context.fillStyle = '#294c58';
+        context.fillStyle = '#728e9b';
         $.each(components.remoteProcessGroups, function (_, d) {
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         // process groups
-        context.fillStyle = '#294c58';
         $.each(components.processGroups, function (_, d) {
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         // processors
         $.each(components.processors, function (_, d) {
-            var color = nf.Processor.defaultColor();
+            //default color
+            var color = '#dde4eb';
 
-            // use the specified color if appropriate
-            if (nf.Common.isDefinedAndNotNull(d.component.style['background-color'])) {
-                color = d.component.style['background-color'];
+            if (d.permissions.canRead) {
+                // use the specified color if appropriate
+                if (nfCommon.isDefinedAndNotNull(d.component.style['background-color'])) {
+                    color = d.component.style['background-color'];
+
+                    //if the background color is #ffffff use the default instead
+                    if (color === '#ffffff') {
+                        color = '#dde4eb';
+                    }
+                }
             }
 
             context.fillStyle = color;
-            context.fillRect(d.component.position.x, d.component.position.y, d.dimensions.width, d.dimensions.height);
+            context.fillRect(d.position.x, d.position.y, d.dimensions.width, d.dimensions.height);
         });
 
         context.restore();
@@ -203,141 +241,132 @@ nf.Birdseye = (function () {
     // whether or not the birdseye is open, don't adjust unless necessary
     var visible = true;
 
-    return {
-        init: function () {
+    var nfBirdseye = {
+
+        /**
+         * Initializes of the graph controller.
+         *
+         * @param nfGraphRef   The nfConnectable module.
+         */
+        init: function (nfGraphRef) {
+            nfGraph = nfGraphRef;
+
             var birdseye = $('#birdseye');
-            var birdseyeContainer = $('#birdseye-container');
-            $('#birdseye-collapse').click(function () {
-                // update the outline collapse icon
-                if (birdseye.is(':visible')) {
-                    $(this).removeClass('birdseye-expanded-hover').addClass('birdseye-collapsed-hover');
-
-                    // hide the outline
-                    birdseye.hide();
-                    birdseyeContainer.hide();
-                    visible = false;
-
-                    // shift the counts position
-                    $('#controller-counts').css('margin-right', '-13px');
-                } else {
-                    $(this).removeClass('birdseye-collapsed-hover').addClass('birdseye-expanded-hover');
-
-                    // shift the counts position
-                    $('#controller-counts').css('margin-right', '195px');
-
-                    // show the outline
-                    birdseye.show();
-                    birdseyeContainer.show();
-                    visible = true;
-
-                    // refresh the birdseye as it may have changed
-                    refresh(nf.Graph.get());
-                }
-            }).mouseover(function () {
-                // update the outline collapse icon
-                if (birdseye.is(':visible')) {
-                    $(this).removeClass('birdseye-expanded').addClass('birdseye-expanded-hover');
-                } else {
-                    $(this).removeClass('birdseye-collapsed').addClass('birdseye-collapsed-hover');
-                }
-            }).mouseout(function () {
-                // update the outline collapse icon
-                if (birdseye.is(':visible')) {
-                    $(this).removeClass('birdseye-expanded-hover').addClass('birdseye-expanded');
-                } else {
-                    $(this).removeClass('birdseye-collapsed-hover').addClass('birdseye-collapsed');
-                }
-            });
 
             d3.select('#birdseye').append('canvas')
-                    .attr('id', 'birdseye-canvas')
-                    .attr('width', birdseye.width())
-                    .attr('height', birdseye.height());
+                .attr('id', 'birdseye-canvas')
+                .attr('width', birdseye.width())
+                .attr('height', birdseye.height());
 
             // build the birdseye svg
             var svg = d3.select('#birdseye').append('svg')
-                    .attr('width', birdseye.width())
-                    .attr('height', birdseye.height());
+                .attr('width', birdseye.width())
+                .attr('height', birdseye.height());
 
             // group birdseye components together
             birdseyeGroup = svg.append('g')
-                    .attr('class', 'birdseye');
+                .attr('class', 'birdseye');
 
             // processor in the birdseye
             componentGroup = birdseyeGroup.append('g')
-                    .attr('pointer-events', 'none');
+                .attr('pointer-events', 'none');
 
             // define the brush drag behavior
             var brush = d3.behavior.drag()
-                    .origin(function (d) {
-                        return {
-                            x: d.x,
-                            y: d.y
-                        };
-                    })
-                    .on('dragstart', function () {
-                        // hide the context menu
-                        nf.ContextMenu.hide();
-                    })
-                    .on('drag', function (d) {
-                        d.x += d3.event.dx;
-                        d.y += d3.event.dy;
+                .origin(function (d) {
+                    return {
+                        x: d.x,
+                        y: d.y
+                    };
+                })
+                .on('dragstart', function () {
+                    // hide the context menu
+                    nfContextMenu.hide();
+                })
+                .on('drag', function (d) {
+                    d.x += d3.event.dx;
+                    d.y += d3.event.dy;
 
-                        // update the location of the brush
-                        d3.select(this).attr('transform', function () {
-                            return 'translate(' + d.x + ', ' + d.y + ')';
-                        });
-                        // get the current transformation
-                        var scale = nf.Canvas.View.scale();
-                        var translate = nf.Canvas.View.translate();
-
-                        // update the translation according to the delta
-                        translate = [(-d3.event.dx * scale) + translate[0], (-d3.event.dy * scale) + translate[1]];
-
-                        // record the current transforms
-                        nf.Canvas.View.translate(translate);
-
-                        // refresh the canvas
-                        nf.Canvas.View.refresh({
-                            persist: false,
-                            transition: false,
-                            refreshComponents: false,
-                            refreshBirdseye: false
-                        });
-                    })
-                    .on('dragend', function () {
-                        // update component visibility
-                        nf.Canvas.View.updateVisibility();
-
-                        // persist the users view
-                        nf.CanvasUtils.persistUserView();
-
-                        // refresh the birdseye
-                        nf.Birdseye.refresh();
+                    // update the location of the brush
+                    d3.select(this).attr('transform', function () {
+                        return 'translate(' + d.x + ', ' + d.y + ')';
                     });
+                    // get the current transformation
+                    var scale = nfCanvasUtils.scaleCanvasView();
+                    var translate = nfCanvasUtils.translateCanvasView();
+
+                    // update the translation according to the delta
+                    translate = [(-d3.event.dx * scale) + translate[0], (-d3.event.dy * scale) + translate[1]];
+
+                    // record the current transforms
+                    nfCanvasUtils.translateCanvasView(translate);
+
+                    // refresh the canvas
+                    nfCanvasUtils.refreshCanvasView({
+                        persist: false,
+                        transition: false,
+                        refreshComponents: false,
+                        refreshBirdseye: false
+                    });
+                })
+                .on('dragend', function () {
+                    // update component visibility
+                    nfGraph.updateVisibility();
+
+                    // persist the users view
+                    nfCanvasUtils.persistUserView();
+
+                    // refresh the birdseye
+                    nfBirdseye.refresh();
+                });
 
             // context area
             birdseyeGroup.append('g')
-                    .attr({
-                        'pointer-events': 'all',
-                        'class': 'birdseye-brush-container'
-                    })
-                    .append('rect')
-                    .attr('class', 'birdseye-brush moveable')
-                    .datum({
-                        x: 0,
-                        y: 0
-                    })
-                    .call(brush);
+                .attr({
+                    'pointer-events': 'all',
+                    'class': 'birdseye-brush-container'
+                })
+                .append('rect')
+                .attr('class', 'birdseye-brush moveable')
+                .datum({
+                    x: 0,
+                    y: 0
+                })
+                .call(brush);
         },
-        
+
         /**
          * Handles rendering of the birdseye tool.
          */
         refresh: function () {
             if (visible) {
-                refresh(nf.Graph.get());
+                refresh(nfGraph.get());
+            }
+        },
+
+        /**
+         * Function that needs to be call when the birdseye visibility changes.
+         *
+         * @param {boolean} isVisible
+         */
+        updateBirdseyeVisibility: function (isVisible) {
+            var birdseye = $('#birdseye');
+
+            // update the outline collapse icon
+            if (isVisible) {
+                // show the outline
+                birdseye.show();
+                visible = true;
+
+                // refresh the birdseye as it may have changed
+                refresh(nfGraph.get());
+            } else {
+                // hide the outline
+                birdseye.hide();
+                visible = false;
             }
         }
     };
-}());
+
+    return nfBirdseye;
+}));

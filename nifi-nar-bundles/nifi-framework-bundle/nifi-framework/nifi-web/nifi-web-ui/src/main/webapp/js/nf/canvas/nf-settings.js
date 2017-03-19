@@ -15,24 +15,67 @@
  * limitations under the License.
  */
 
-/* global nf, Slick, d3 */
+/* global define, module, require, exports */
 
-nf.Settings = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'Slick',
+                'd3',
+                'nf.Client',
+                'nf.Dialog',
+                'nf.Common',
+                'nf.CanvasUtils',
+                'nf.ControllerServices',
+                'nf.ErrorHandler',
+                'nf.ReportingTask',
+                'nf.Shell',
+                'nf.ComponentState',
+                'nf.PolicyManagement'],
+            function ($, Slick, d3, nfClient, nfDialog, nfCommon, nfCanvasUtils, nfControllerServices, nfErrorHandler, nfReportingTask, nfShell, nfComponentState, nfPolicyManagement) {
+                return (nf.Settings = factory($, Slick, d3, nfClient, nfDialog, nfCommon, nfCanvasUtils, nfControllerServices, nfErrorHandler, nfReportingTask, nfShell, nfComponentState, nfPolicyManagement));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.Settings =
+            factory(require('jquery'),
+                require('Slick'),
+                require('d3'),
+                require('nf.Client'),
+                require('nf.Dialog'),
+                require('nf.Common'),
+                require('nf.CanvasUtils'),
+                require('nf.ControllerServices'),
+                require('nf.ErrorHandler'),
+                require('nf.ReportingTask'),
+                require('nf.Shell'),
+                require('nf.ComponentState'),
+                require('nf.PolicyManagement')));
+    } else {
+        nf.Settings = factory(root.$,
+            root.Slick,
+            root.d3,
+            root.nf.Client,
+            root.nf.Dialog,
+            root.nf.Common,
+            root.nf.CanvasUtils,
+            root.nf.ControllerServices,
+            root.nf.ErrorHandler,
+            root.nf.ReportingTask,
+            root.nf.Shell,
+            root.nf.ComponentState,
+            root.nf.PolicyManagement);
+    }
+}(this, function ($, Slick, d3, nfClient, nfDialog, nfCommon, nfCanvasUtils, nfControllerServices, nfErrorHandler, nfReportingTask, nfShell, nfComponentState, nfPolicyManagement) {
+    'use strict';
+
 
     var config = {
-        node: 'node',
-        ncm: 'ncm',
-        filterText: 'Filter',
-        styles: {
-            filterList: 'filter-list'
-        },
         urls: {
+            api: '../nifi-api',
             controllerConfig: '../nifi-api/controller/config',
-            controllerArchive: '../nifi-api/controller/archive',
-            controllerServiceTypes: '../nifi-api/controller/controller-service-types',
-            controllerServices: '../nifi-api/controller/controller-services',
-            reportingTaskTypes: '../nifi-api/controller/reporting-task-types',
-            reportingTasks: '../nifi-api/controller/reporting-tasks'
+            reportingTaskTypes: '../nifi-api/flow/reporting-task-types',
+            createReportingTask: '../nifi-api/controller/reporting-tasks',
+            reportingTasks: '../nifi-api/flow/reporting-tasks'
         }
     };
 
@@ -42,78 +85,61 @@ nf.Settings = (function () {
         enableCellNavigation: true,
         enableColumnReorder: false,
         autoEdit: false,
-        multiSelect: false
+        multiSelect: false,
+        rowHeight: 24
     };
+
+    /**
+     * Gets the controller services table.
+     *
+     * @returns {*|jQuery|HTMLElement}
+     */
+    var getControllerServicesTable = function () {
+        return $('#controller-services-table');
+    };
+
+    /**
+     * Saves the settings for the controller.
+     *
+     * @param version
+     */
+    var saveSettings = function (version) {
+        // marshal the configuration details
+        var configuration = marshalConfiguration();
+        var entity = {
+            'revision': nfClient.getRevision({
+                'revision': {
+                    'version': version
+                }
+            }),
+            'component': configuration
+        };
+
+        // save the new configuration details
+        $.ajax({
+            type: 'PUT',
+            url: config.urls.controllerConfig,
+            data: JSON.stringify(entity),
+            dataType: 'json',
+            contentType: 'application/json'
+        }).done(function (response) {
+            // close the settings dialog
+            nfDialog.showOkDialog({
+                headerText: 'Settings',
+                dialogContent: 'Settings successfully applied.'
+            });
+
+            // register the click listener for the save button
+            $('#settings-save').off('click').on('click', function () {
+                saveSettings(response.revision.version);
+            });
+        }).fail(nfErrorHandler.handleAjaxError);
+    }
 
     /**
      * Initializes the general tab.
      */
     var initGeneral = function () {
-        // update the visibility of the controls
-        if (nf.Common.isDFM()) {
-            $('#general-settings div.editable').show();
-            $('#general-settings div.read-only').hide();
-
-            // register the click listener for the archive link
-            $('#archive-flow-link').click(function () {
-                var revision = nf.Client.getRevision();
-
-                $.ajax({
-                    type: 'POST',
-                    url: config.urls.controllerArchive,
-                    data: {
-                        version: revision.version,
-                        clientId: revision.clientId
-                    },
-                    dataType: 'json'
-                }).done(function (response) {
-                    // update the revision
-                    nf.Client.setRevision(response.revision);
-
-                    // show the result dialog
-                    nf.Dialog.showOkDialog({
-                        dialogContent: 'A new flow archive was successfully created.',
-                        overlayBackground: false
-                    });
-                }).fail(nf.Common.handleAjaxError);
-            });
-
-            // register the click listener for the save button
-            $('#settings-save').click(function () {
-                var revision = nf.Client.getRevision();
-
-                // marshal the configuration details
-                var configuration = marshalConfiguration();
-                configuration['version'] = revision.version;
-                configuration['clientId'] = revision.clientId;
-
-                // save the new configuration details
-                $.ajax({
-                    type: 'PUT',
-                    url: config.urls.controllerConfig,
-                    data: configuration,
-                    dataType: 'json'
-                }).done(function (response) {
-                    // update the revision
-                    nf.Client.setRevision(response.revision);
-
-                    // update the displayed name
-                    document.title = response.config.name;
-
-                    // set the data flow title and close the shell
-                    $('#data-flow-title-container').children('span.link:first-child').text(response.config.name);
-
-                    // close the settings dialog
-                    nf.Dialog.showOkDialog({
-                        dialogContent: 'Settings successfully applied.',
-                        overlayBackground: false
-                    });
-                }).fail(nf.Common.handleAjaxError);
-            });
-        } else {
-            $('#general-settings div.editable').hide();
-            $('#general-settings div.read-only').show();
-        }
     };
 
     /**
@@ -122,115 +148,14 @@ nf.Settings = (function () {
     var marshalConfiguration = function () {
         // create the configuration
         var configuration = {};
-        configuration['name'] = $('#data-flow-title-field').val();
-        configuration['comments'] = $('#data-flow-comments-field').val();
         configuration['maxTimerDrivenThreadCount'] = $('#maximum-timer-driven-thread-count-field').val();
         configuration['maxEventDrivenThreadCount'] = $('#maximum-event-driven-thread-count-field').val();
         return configuration;
     };
 
     /**
-     * Get the text out of the filter field. If the filter field doesn't
-     * have any text it will contain the text 'filter list' so this method
-     * accounts for that.
-     */
-    var getControllerServiceTypeFilterText = function () {
-        var filterText = '';
-        var filterField = $('#controller-service-type-filter');
-        if (!filterField.hasClass(config.styles.filterList)) {
-            filterText = filterField.val();
-        }
-        return filterText;
-    };
-
-    /**
-     * Filters the processor type table.
-     */
-    var applyControllerServiceTypeFilter = function () {
-        // get the dataview
-        var controllerServiceTypesGrid = $('#controller-service-types-table').data('gridInstance');
-
-        // ensure the grid has been initialized
-        if (nf.Common.isDefinedAndNotNull(controllerServiceTypesGrid)) {
-            var controllerServiceTypesData = controllerServiceTypesGrid.getData();
-
-            // update the search criteria
-            controllerServiceTypesData.setFilterArgs({
-                searchString: getControllerServiceTypeFilterText(),
-                property: $('#controller-service-type-filter-options').combo('getSelectedOption').value
-            });
-
-            // need to invalidate the entire table since parent elements may need to be 
-            // rerendered due to changes in their children
-            controllerServiceTypesData.refresh();
-            controllerServiceTypesGrid.invalidate();
-        }
-    };
-
-    /**
-     * Hides the selected controller service.
-     */
-    var clearSelectedControllerService = function () {
-        if (nf.Canvas.isClustered()) {
-            $('#controller-service-availability-combo').combo('setSelectedOption', {
-                value: config.node
-            });
-        }
-        
-        $('#controller-service-type-description').text('');
-        $('#controller-service-type-name').text('');
-        $('#selected-controller-service-name').text('');
-        $('#selected-controller-service-type').text('');
-        $('#controller-service-description-container').hide();
-    };
-
-    /**
-     * Clears the selected controller service type.
-     */
-    var clearControllerServiceSelection = function () {
-        // clear the selected row
-        clearSelectedControllerService();
-
-        // clear the active cell the it can be reselected when its included
-        var controllerServiceTypesGrid = $('#controller-service-types-table').data('gridInstance');
-        controllerServiceTypesGrid.resetActiveCell();
-    };
-
-    /**
-     * Performs the filtering.
-     * 
-     * @param {object} item     The item subject to filtering
-     * @param {object} args     Filter arguments
-     * @returns {Boolean}       Whether or not to include the item
-     */
-    var filterControllerServiceTypes = function (item, args) {
-        // determine if the item matches the filter
-        var matchesFilter = matchesRegex(item, args);
-
-        // determine if the row matches the selected tags
-        var matchesTags = true;
-        if (matchesFilter) {
-            var tagFilters = $('#controller-service-tag-cloud').tagcloud('getSelectedTags');
-            var hasSelectedTags = tagFilters.length > 0;
-            if (hasSelectedTags) {
-                matchesTags = matchesSelectedTags(tagFilters, item['tags']);
-            }
-        }
-
-        // determine if this row should be visible
-        var matches = matchesFilter && matchesTags;
-
-        // if this row is currently selected and its being filtered
-        if (matches === false && $('#selected-controller-service-type').text() === item['type']) {
-            clearControllerServiceSelection();
-        }
-
-        return matches;
-    };
-
-    /**
      * Determines if the item matches the filter.
-     * 
+     *
      * @param {object} item     The item to filter
      * @param {object} args     The filter criteria
      * @returns {boolean}       Whether the item matches the filter
@@ -249,12 +174,14 @@ nf.Settings = (function () {
         }
 
         // determine if the item matches the filter
-        return item[args.property].search(filterExp) >= 0;
+        var matchesLabel = item['label'].search(filterExp) >= 0;
+        var matchesTags = item['tags'].search(filterExp) >= 0;
+        return matchesLabel || matchesTags;
     };
 
     /**
      * Determines if the specified tags match all the tags selected by the user.
-     * 
+     *
      * @argument {string[]} tagFilters      The tag filters
      * @argument {string} tags              The tags to test
      */
@@ -279,270 +206,35 @@ nf.Settings = (function () {
     };
 
     /**
-     * Adds a new controller service of the specified type.
-     * 
-     * @param {string} controllerServiceType
+     * Whether the specified item is selectable.
+     *
+     * @param item reporting task type
      */
-    var addControllerService = function (controllerServiceType) {
-        var revision = nf.Client.getRevision();
-
-        // get the desired availability
-        var availability;
-        if (nf.Canvas.isClustered()) {
-            availability = $('#controller-service-availability-combo').combo('getSelectedOption').value;
-        } else {
-            availability = config.node;
-        }
-
-        // add the new controller service
-        var addService = $.ajax({
-            type: 'POST',
-            url: config.urls.controllerServices + '/' + encodeURIComponent(availability),
-            data: {
-                version: revision.version,
-                clientId: revision.clientId,
-                type: controllerServiceType
-            },
-            dataType: 'json'
-        }).done(function (response) {
-            // update the revision
-            nf.Client.setRevision(response.revision);
-
-            // add the item
-            var controllerService = response.controllerService;
-            var controllerServicesGrid = $('#controller-services-table').data('gridInstance');
-            var controllerServicesData = controllerServicesGrid.getData();
-            controllerServicesData.addItem(controllerService);
-
-            // resort
-            controllerServicesData.reSort();
-            controllerServicesGrid.invalidate();
-
-            // select the new controller service
-            var row = controllerServicesData.getRowById(controllerService.id);
-            controllerServicesGrid.setSelectedRows([row]);
-            controllerServicesGrid.scrollRowIntoView(row);
-        }).fail(nf.Common.handleAjaxError);
-
-        // hide the dialog
-        $('#new-controller-service-dialog').modal('hide');
-
-        return addService;
+    var isSelectable = function (item) {
+        return nfCommon.isBlank(item.usageRestriction) || nfCommon.canAccessRestrictedComponents();
     };
 
     /**
-     * Initializes the new controller service dialog.
+     * Formatter for the name column.
+     *
+     * @param {type} row
+     * @param {type} cell
+     * @param {type} value
+     * @param {type} columnDef
+     * @param {type} dataContext
+     * @returns {String}
      */
-    var initNewControllerServiceDialog = function () {
-        // specify the combo options
-        $('#controller-service-type-filter-options').combo({
-            options: [{
-                    text: 'by type',
-                    value: 'label'
-                }, {
-                    text: 'by tag',
-                    value: 'tags'
-                }],
-            select: function (option) {
-                applyControllerServiceTypeFilter();
-            }
-        });
-
-        // specify the controller service availability
-        if (nf.Canvas.isClustered()) {
-            $('#controller-service-availability-combo').combo({
-                options: [{
-                        text: 'Node',
-                        value: config.node,
-                        description: 'This controller service will be available on the nodes only.'
-                    }, {
-                        text: 'Cluster Manager',
-                        value: config.ncm,
-                        description: 'This controller service will be available on the cluster manager only.'
-                    }]
-            });
-            $('#controller-service-availability-container').show();
+    var nameFormatter = function (row, cell, value, columnDef, dataContext) {
+        if (!dataContext.permissions.canRead) {
+            return '<span class="blank">' + dataContext.id + '</span>';
         }
 
-        // define the function for filtering the list
-        $('#controller-service-type-filter').keyup(function () {
-            applyControllerServiceTypeFilter();
-        }).focus(function () {
-            if ($(this).hasClass(config.styles.filterList)) {
-                $(this).removeClass(config.styles.filterList).val('');
-            }
-        }).blur(function () {
-            if ($(this).val() === '') {
-                $(this).addClass(config.styles.filterList).val(config.filterText);
-            }
-        }).addClass(config.styles.filterList).val(config.filterText);
-
-        // initialize the processor type table
-        var controllerServiceTypesColumns = [
-            {id: 'type', name: 'Type', field: 'label', sortable: false, resizable: true},
-            {id: 'tags', name: 'Tags', field: 'tags', sortable: false, resizable: true}
-        ];
-
-        // initialize the dataview
-        var controllerServiceTypesData = new Slick.Data.DataView({
-            inlineFilters: false
-        });
-        controllerServiceTypesData.setItems([]);
-        controllerServiceTypesData.setFilterArgs({
-            searchString: getControllerServiceTypeFilterText(),
-            property: $('#controller-service-type-filter-options').combo('getSelectedOption').value
-        });
-        controllerServiceTypesData.setFilter(filterControllerServiceTypes);
-
-        // initialize the grid
-        var controllerServiceTypesGrid = new Slick.Grid('#controller-service-types-table', controllerServiceTypesData, controllerServiceTypesColumns, gridOptions);
-        controllerServiceTypesGrid.setSelectionModel(new Slick.RowSelectionModel());
-        controllerServiceTypesGrid.registerPlugin(new Slick.AutoTooltips());
-        controllerServiceTypesGrid.setSortColumn('type', true);
-        controllerServiceTypesGrid.onSelectedRowsChanged.subscribe(function (e, args) {
-            if ($.isArray(args.rows) && args.rows.length === 1) {
-                var controllerServiceTypeIndex = args.rows[0];
-                var controllerServiceType = controllerServiceTypesGrid.getDataItem(controllerServiceTypeIndex);
-
-                // set the controller service type description
-                if (nf.Common.isBlank(controllerServiceType.description)) {
-                    $('#controller-service-type-description').attr('title', '').html('<span class="unset">No description specified</span>');
-                } else {
-                    $('#controller-service-type-description').html(controllerServiceType.description).ellipsis();
-                }
-
-                // populate the dom
-                $('#controller-service-type-name').text(controllerServiceType.label).ellipsis();
-                $('#selected-controller-service-name').text(controllerServiceType.label);
-                $('#selected-controller-service-type').text(controllerServiceType.type);
-
-                // show the selected controller service
-                $('#controller-service-description-container').show();
-            }
-        });
-        controllerServiceTypesGrid.onDblClick.subscribe(function (e, args) {
-            var controllerServiceType = controllerServiceTypesGrid.getDataItem(args.row);
-            addControllerService(controllerServiceType.type);
-        });
-
-        // wire up the dataview to the grid
-        controllerServiceTypesData.onRowCountChanged.subscribe(function (e, args) {
-            controllerServiceTypesGrid.updateRowCount();
-            controllerServiceTypesGrid.render();
-
-            // update the total number of displayed processors
-            $('#displayed-controller-service-types').text(args.current);
-        });
-        controllerServiceTypesData.onRowsChanged.subscribe(function (e, args) {
-            controllerServiceTypesGrid.invalidateRows(args.rows);
-            controllerServiceTypesGrid.render();
-        });
-        controllerServiceTypesData.syncGridSelection(controllerServiceTypesGrid, true);
-
-        // hold onto an instance of the grid
-        $('#controller-service-types-table').data('gridInstance', controllerServiceTypesGrid);
-
-        // load the available controller services
-        $.ajax({
-            type: 'GET',
-            url: config.urls.controllerServiceTypes,
-            dataType: 'json'
-        }).done(function (response) {
-            var id = 0;
-            var tags = [];
-
-            // begin the update
-            controllerServiceTypesData.beginUpdate();
-
-            // go through each controller service type
-            $.each(response.controllerServiceTypes, function (i, documentedType) {
-                // add the documented type
-                controllerServiceTypesData.addItem({
-                    id: id++,
-                    label: nf.Common.substringAfterLast(documentedType.type, '.'),
-                    type: documentedType.type,
-                    description: nf.Common.escapeHtml(documentedType.description),
-                    tags: documentedType.tags.join(', ')
-                });
-
-                // count the frequency of each tag for this type
-                $.each(documentedType.tags, function (i, tag) {
-                    tags.push(tag.toLowerCase());
-                });
-            });
-
-            // end the udpate
-            controllerServiceTypesData.endUpdate();
-            
-            // set the total number of processors
-            $('#total-controller-service-types, #displayed-controller-service-types').text(response.controllerServiceTypes.length);
-
-            // create the tag cloud
-            $('#controller-service-tag-cloud').tagcloud({
-                tags: tags,
-                select: applyControllerServiceTypeFilter,
-                remove: applyControllerServiceTypeFilter
-            });
-        }).fail(nf.Common.handleAjaxError);
-
-        // initialize the controller service dialog
-        $('#new-controller-service-dialog').modal({
-            headerText: 'Add Controller Service',
-            overlayBackground: false,
-            buttons: [{
-                    buttonText: 'Add',
-                    handler: {
-                        click: function () {
-                            var selectedServiceType = $('#selected-controller-service-type').text();
-                            
-                            // ensure something was selected
-                            if (selectedServiceType === '') {
-                                nf.Dialog.showOkDialog({
-                                    dialogContent: 'The type of controller service to create must be selected.',
-                                    overlayBackground: false
-                                });
-                            } else {
-                                addControllerService(selectedServiceType);
-                            }
-                        }
-                    }
-                }, {
-                    buttonText: 'Cancel',
-                    handler: {
-                        click: function () {
-                            $(this).modal('hide');
-                        }
-                    }
-                }],
-            handler: {
-                close: function () {
-                    // clear the selected row
-                    clearSelectedControllerService();
-
-                    // clear any filter strings
-                    $('#controller-service-type-filter').addClass(config.styles.filterList).val(config.filterText);
-
-                    // clear the tagcloud
-                    $('#controller-service-tag-cloud').tagcloud('clearSelectedTags');
-
-                    // reset the filter
-                    applyControllerServiceTypeFilter();
-
-                    // unselect any current selection
-                    var processTypesGrid = $('#controller-service-types-table').data('gridInstance');
-                    processTypesGrid.setSelectedRows([]);
-                    processTypesGrid.resetActiveCell();
-                }
-            }
-        }).draggable({
-            containment: 'parent',
-            handle: '.dialog-header'
-        });
+        return dataContext.component.name;
     };
 
     /**
      * Formatter for the type column.
-     * 
+     *
      * @param {type} row
      * @param {type} cell
      * @param {type} value
@@ -551,331 +243,66 @@ nf.Settings = (function () {
      * @returns {String}
      */
     var typeFormatter = function (row, cell, value, columnDef, dataContext) {
-        return nf.Common.substringAfterLast(value, '.');
-    };
-
-    /**
-     * Formatter for the availability column.
-     * 
-     * @param {type} row
-     * @param {type} cell
-     * @param {type} value
-     * @param {type} columnDef
-     * @param {type} dataContext
-     * @returns {String}
-     */
-    var availabilityFormatter = function (row, cell, value, columnDef, dataContext) {
-        if (value === config.node) {
-            return 'Node';
-        } else {
-            return 'Cluster Manager';
+        if (!dataContext.permissions.canRead) {
+            return '';
         }
+
+        return nfCommon.substringAfterLast(dataContext.component.type, '.');
     };
 
     /**
      * Sorts the specified data using the specified sort details.
-     * 
+     *
      * @param {object} sortDetails
      * @param {object} data
      */
     var sort = function (sortDetails, data) {
         // defines a function for sorting
         var comparer = function (a, b) {
-            var aString = nf.Common.isDefinedAndNotNull(a[sortDetails.columnId]) ? a[sortDetails.columnId] : '';
-            var bString = nf.Common.isDefinedAndNotNull(b[sortDetails.columnId]) ? b[sortDetails.columnId] : '';
-            return aString === bString ? 0 : aString > bString ? 1 : -1;
+            if (a.permissions.canRead && b.permissions.canRead) {
+                if (sortDetails.columnId === 'moreDetails') {
+                    var aBulletins = 0;
+                    if (!nfCommon.isEmpty(a.bulletins)) {
+                        aBulletins = a.bulletins.length;
+                    }
+                    var bBulletins = 0;
+                    if (!nfCommon.isEmpty(b.bulletins)) {
+                        bBulletins = b.bulletins.length;
+                    }
+                    return aBulletins - bBulletins;
+                } else if (sortDetails.columnId === 'type') {
+                    var aType = nfCommon.isDefinedAndNotNull(a.component[sortDetails.columnId]) ? nfCommon.substringAfterLast(a.component[sortDetails.columnId], '.') : '';
+                    var bType = nfCommon.isDefinedAndNotNull(b.component[sortDetails.columnId]) ? nfCommon.substringAfterLast(b.component[sortDetails.columnId], '.') : '';
+                    return aType === bType ? 0 : aType > bType ? 1 : -1;
+                } else if (sortDetails.columnId === 'state') {
+                    var aState = 'Invalid';
+                    if (nfCommon.isEmpty(a.component.validationErrors)) {
+                        aState = nfCommon.isDefinedAndNotNull(a.component[sortDetails.columnId]) ? a.component[sortDetails.columnId] : '';
+                    }
+                    var bState = 'Invalid';
+                    if (nfCommon.isEmpty(b.component.validationErrors)) {
+                        bState = nfCommon.isDefinedAndNotNull(b.component[sortDetails.columnId]) ? b.component[sortDetails.columnId] : '';
+                    }
+                    return aState === bState ? 0 : aState > bState ? 1 : -1;
+                } else {
+                    var aString = nfCommon.isDefinedAndNotNull(a.component[sortDetails.columnId]) ? a.component[sortDetails.columnId] : '';
+                    var bString = nfCommon.isDefinedAndNotNull(b.component[sortDetails.columnId]) ? b.component[sortDetails.columnId] : '';
+                    return aString === bString ? 0 : aString > bString ? 1 : -1;
+                }
+            } else {
+                if (!a.permissions.canRead && !b.permissions.canRead) {
+                    return 0;
+                }
+                if (a.permissions.canRead) {
+                    return 1;
+                } else {
+                    return -1;
+                }
+            }
         };
 
         // perform the sort
         data.sort(comparer, sortDetails.sortAsc);
-    };
-
-    /**
-     * Initializes the controller services tab.
-     */
-    var initControllerServices = function () {
-        // initialize the new controller service dialog
-        initNewControllerServiceDialog();
-
-        // more details formatter
-        var moreControllerServiceDetails = function (row, cell, value, columnDef, dataContext) {
-            var markup = '<img src="images/iconDetails.png" title="View Details" class="pointer view-controller-service" style="margin-top: 5px; float: left;" />';
-            var hasErrors = !nf.Common.isEmpty(dataContext.validationErrors);
-            var hasBulletins = !nf.Common.isEmpty(dataContext.bulletins);
-            
-            if (hasErrors) {
-                markup += '<img src="images/iconAlert.png" class="has-errors" style="margin-top: 4px; margin-left: 1px; float: left;" />';
-            }
-            
-            if (hasBulletins) {
-                markup += '<img src="images/iconBulletin.png" class="has-bulletins" style="margin-top: 5px; margin-left: 5px; float: left;"/>';
-            }
-            
-            if (hasErrors || hasBulletins) {
-                markup += '<span class="hidden row-id">' + nf.Common.escapeHtml(dataContext.id) + '</span>';
-            }
-            
-            return markup;
-        };
-        
-        var controllerServiceStateFormatter = function (row, cell, value, columnDef, dataContext) {
-            // determine the appropriate label
-            var icon = '', label = '';
-            if (!nf.Common.isEmpty(dataContext.validationErrors)) {
-                icon = 'invalid';
-                label = 'Invalid';
-            } else {
-                if (value === 'DISABLED') {
-                    icon = 'disabled';
-                    label = 'Disabled';
-                } else if (value === 'DISABLING') {
-                    icon = 'disabled';
-                    label = 'Disabling';
-                } else if (value === 'ENABLED') {
-                    icon = 'enabled';
-                    label = 'Enabled';
-                } else if (value === 'ENABLING') {
-                    icon = 'enabled';
-                    label = 'Enabling';
-                }
-            }
-            
-            // format the markup
-            var formattedValue = '<div class="' + icon + '" style="margin-top: 3px;"></div>';
-            return formattedValue + '<div class="status-text" style="margin-top: 2px; margin-left: 4px; float: left;">' + label + '</div>';
-        };
-
-        var controllerServiceActionFormatter = function (row, cell, value, columnDef, dataContext) {
-            var markup = '';
-
-            // only DFMs can edit a controller service
-            if (nf.Common.isDFM()) {
-                if (dataContext.state === 'ENABLED' || dataContext.state === 'ENABLING') {
-                    markup += '<img src="images/iconDisable.png" title="Disable" class="pointer disable-controller-service" style="margin-top: 2px;" />&nbsp;';
-                } else if (dataContext.state === 'DISABLED') {
-                    markup += '<img src="images/iconEdit.png" title="Edit" class="pointer edit-controller-service" style="margin-top: 2px;" />&nbsp;';
-                    
-                    // if there are no validation errors allow enabling
-                    if (nf.Common.isEmpty(dataContext.validationErrors)) {
-                        markup += '<img src="images/iconEnable.png" title="Enable" class="pointer enable-controller-service" style="margin-top: 2px;"/>&nbsp;';
-                    }
-                    
-                    markup += '<img src="images/iconDelete.png" title="Remove" class="pointer delete-controller-service" style="margin-top: 2px;" />&nbsp;';
-                }
-            }
-
-            // always include a button to view the usage
-            markup += '<img src="images/iconUsage.png" title="Usage" class="pointer controller-service-usage" style="margin-top: 2px;"/>&nbsp;';
-
-            return markup;
-        };
-
-        // define the column model for the controller services table
-        var controllerServicesColumns = [
-            {id: 'moreDetails', name: '&nbsp;', resizable: false, formatter: moreControllerServiceDetails, sortable: false, width: 65, maxWidth: 65},
-            {id: 'name', field: 'name', name: 'Name', sortable: true, resizable: true},
-            {id: 'type', field: 'type', name: 'Type', formatter: typeFormatter, sortable: true, resizable: true},
-            {id: 'state', field: 'state', name: 'State', formatter: controllerServiceStateFormatter, sortable: true, resizeable: true}
-        ];
-
-        // only show availability when clustered
-        if (nf.Canvas.isClustered()) {
-            controllerServicesColumns.push({id: 'availability', field: 'availability', name: 'Availability', formatter: availabilityFormatter, sortable: true, resizeable: true});
-        }
-        
-        // action column should always be last
-        controllerServicesColumns.push({id: 'actions', name: '&nbsp;', resizable: false, formatter: controllerServiceActionFormatter, sortable: false, width: 90, maxWidth: 90});
-
-        // initialize the dataview
-        var controllerServicesData = new Slick.Data.DataView({
-            inlineFilters: false
-        });
-        controllerServicesData.setItems([]);
-
-        // initialize the sort
-        sort({
-            columnId: 'name',
-            sortAsc: true
-        }, controllerServicesData);
-
-        // initialize the grid
-        var controllerServicesGrid = new Slick.Grid('#controller-services-table', controllerServicesData, controllerServicesColumns, gridOptions);
-        controllerServicesGrid.setSelectionModel(new Slick.RowSelectionModel());
-        controllerServicesGrid.registerPlugin(new Slick.AutoTooltips());
-        controllerServicesGrid.setSortColumn('name', true);
-        controllerServicesGrid.onSort.subscribe(function (e, args) {
-            sort({
-                columnId: args.sortCol.field,
-                sortAsc: args.sortAsc
-            }, controllerServicesData);
-        });
-
-        // configure a click listener
-        controllerServicesGrid.onClick.subscribe(function (e, args) {
-            var target = $(e.target);
-
-            // get the service at this row
-            var controllerService = controllerServicesData.getItem(args.row);
-
-            // determine the desired action
-            if (controllerServicesGrid.getColumns()[args.cell].id === 'actions') {
-                if (target.hasClass('edit-controller-service')) {
-                    nf.ControllerService.showConfiguration(controllerService);
-                } else if (target.hasClass('enable-controller-service')) {
-                    nf.ControllerService.enable(controllerService);
-                } else if (target.hasClass('disable-controller-service')) {
-                    nf.ControllerService.disable(controllerService);
-                } else if (target.hasClass('delete-controller-service')) {
-                    nf.ControllerService.remove(controllerService);
-                } else if (target.hasClass('controller-service-usage')) {
-                    // close the settings dialog
-                    $('#shell-close-button').click();
-                    
-                    // open the documentation for this reporting task
-                    nf.Shell.showPage('../nifi-docs/documentation?' + $.param({
-                        select: nf.Common.substringAfterLast(controllerService.type, '.')
-                    })).done(function() {
-                        nf.Settings.showSettings();
-                    });
-                }
-            } else if (controllerServicesGrid.getColumns()[args.cell].id === 'moreDetails') {
-                if (target.hasClass('view-controller-service')) {
-                    nf.ControllerService.showDetails(controllerService);
-                }
-            }
-        });
-
-        // wire up the dataview to the grid
-        controllerServicesData.onRowCountChanged.subscribe(function (e, args) {
-            controllerServicesGrid.updateRowCount();
-            controllerServicesGrid.render();
-        });
-        controllerServicesData.onRowsChanged.subscribe(function (e, args) {
-            controllerServicesGrid.invalidateRows(args.rows);
-            controllerServicesGrid.render();
-        });
-        controllerServicesData.syncGridSelection(controllerServicesGrid, true);
-
-        // hold onto an instance of the grid
-        $('#controller-services-table').data('gridInstance', controllerServicesGrid).on('mouseenter', 'div.slick-cell', function (e) {
-            var errorIcon = $(this).find('img.has-errors');
-            if (errorIcon.length && !errorIcon.data('qtip')) {
-                var serviceId = $(this).find('span.row-id').text();
-
-                // get the service item
-                var item = controllerServicesData.getItemById(serviceId);
-
-                // format the errors
-                var tooltip = nf.Common.formatUnorderedList(item.validationErrors);
-
-                // show the tooltip
-                if (nf.Common.isDefinedAndNotNull(tooltip)) {
-                    errorIcon.qtip($.extend({
-                        content: tooltip,
-                        position: {
-                            target: 'mouse',
-                            viewport: $(window),
-                            adjust: {
-                                x: 8,
-                                y: 8,
-                                method: 'flipinvert flipinvert'
-                            }
-                        }
-                    }, nf.Common.config.tooltipConfig));
-                }
-            }
-            
-            var bulletinIcon = $(this).find('img.has-bulletins');
-            if (bulletinIcon.length && !bulletinIcon.data('qtip')) {
-                var taskId = $(this).find('span.row-id').text();
-
-                // get the task item
-                var item = controllerServicesData.getItemById(taskId);
-                
-                // format the tooltip
-                var bulletins = nf.Common.getFormattedBulletins(item.bulletins);
-                var tooltip = nf.Common.formatUnorderedList(bulletins);
-
-                // show the tooltip
-                if (nf.Common.isDefinedAndNotNull(tooltip)) {
-                    bulletinIcon.qtip($.extend({}, nf.Common.config.tooltipConfig, {
-                        content: tooltip,
-                        position: {
-                            target: 'mouse',
-                            viewport: $(window),
-                            adjust: {
-                                x: 8,
-                                y: 8,
-                                method: 'flipinvert flipinvert'
-                            }
-                        }
-                    }));
-                }
-            }
-        });
-    };
-
-    /**
-     * Loads the controller services.
-     */
-    var loadControllerServices = function () {
-        var services = [];
-
-        // get the controller services that are running on the nodes
-        var nodeControllerServices = $.ajax({
-            type: 'GET',
-            url: config.urls.controllerServices + '/' + encodeURIComponent(config.node),
-            dataType: 'json'
-        }).done(function (response) {
-            var nodeServices = response.controllerServices;
-            if (nf.Common.isDefinedAndNotNull(nodeServices)) {
-                $.each(nodeServices, function (_, nodeService) {
-                    services.push($.extend({
-                        bulletins: []
-                    }, nodeService));
-                });
-            }
-        });
-
-        // get the controller services that are running on the ncm
-        var ncmControllerServices = $.Deferred(function (deferred) {
-            if (nf.Canvas.isClustered()) {
-                $.ajax({
-                    type: 'GET',
-                    url: config.urls.controllerServices + '/' + encodeURIComponent(config.ncm),
-                    dataType: 'json'
-                }).done(function (response) {
-                    var ncmServices = response.controllerServices;
-                    if (nf.Common.isDefinedAndNotNull(ncmServices)) {
-                        $.each(ncmServices, function (_, ncmService) {
-                            services.push($.extend({
-                                bulletins: []
-                            }, ncmService));
-                        });
-                    }
-                    deferred.resolve();
-                }).fail(function () {
-                    deferred.reject();
-                });
-            } else {
-                deferred.resolve();
-            }
-        }).promise();
-
-        // add all controller services
-        return $.when(nodeControllerServices, ncmControllerServices).done(function () {
-            var controllerServicesElement = $('#controller-services-table');
-            nf.Common.cleanUpTooltips(controllerServicesElement, 'img.has-errors');
-            nf.Common.cleanUpTooltips(controllerServicesElement, 'img.has-bulletins');
-
-            var controllerServicesGrid = controllerServicesElement.data('gridInstance');
-            var controllerServicesData = controllerServicesGrid.getData();
-
-            // update the controller services
-            controllerServicesData.setItems(services);
-            controllerServicesData.reSort();
-            controllerServicesGrid.invalidate();
-        });
     };
 
     /**
@@ -884,12 +311,7 @@ nf.Settings = (function () {
      * accounts for that.
      */
     var getReportingTaskTypeFilterText = function () {
-        var filterText = '';
-        var filterField = $('#reporting-task-type-filter');
-        if (!filterField.hasClass(config.styles.filterList)) {
-            filterText = filterField.val();
-        }
-        return filterText;
+        return $('#reporting-task-type-filter').val();
     };
 
     /**
@@ -900,19 +322,22 @@ nf.Settings = (function () {
         var reportingTaskTypesGrid = $('#reporting-task-types-table').data('gridInstance');
 
         // ensure the grid has been initialized
-        if (nf.Common.isDefinedAndNotNull(reportingTaskTypesGrid)) {
+        if (nfCommon.isDefinedAndNotNull(reportingTaskTypesGrid)) {
             var reportingTaskTypesData = reportingTaskTypesGrid.getData();
 
             // update the search criteria
             reportingTaskTypesData.setFilterArgs({
-                searchString: getReportingTaskTypeFilterText(),
-                property: $('#reporting-task-type-filter-options').combo('getSelectedOption').value
+                searchString: getReportingTaskTypeFilterText()
             });
-
-            // need to invalidate the entire table since parent elements may need to be 
-            // rerendered due to changes in their children
             reportingTaskTypesData.refresh();
-            reportingTaskTypesGrid.invalidate();
+
+            // update the buttons to possibly trigger the disabled state
+            $('#new-reporting-task-dialog').modal('refreshButtons');
+
+            // update the selection if possible
+            if (reportingTaskTypesData.getLength() > 0) {
+                reportingTaskTypesGrid.setSelectedRows([0]);
+            }
         }
     };
 
@@ -920,12 +345,6 @@ nf.Settings = (function () {
      * Hides the selected reporting task.
      */
     var clearSelectedReportingTask = function () {
-        if (nf.Canvas.isClustered()) {
-            $('#reporting-task-availability-combo').combo('setSelectedOption', {
-                value: config.node
-            });
-        }
-        
         $('#reporting-task-type-description').text('');
         $('#reporting-task-type-name').text('');
         $('#selected-reporting-task-name').text('');
@@ -947,7 +366,7 @@ nf.Settings = (function () {
 
     /**
      * Performs the filtering.
-     * 
+     *
      * @param {object} item     The item subject to filtering
      * @param {object} args     Filter arguments
      * @returns {Boolean}       Whether or not to include the item
@@ -978,50 +397,62 @@ nf.Settings = (function () {
     };
 
     /**
+     * Adds the currently selected reporting task.
+     */
+    var addSelectedReportingTask = function () {
+        var selectedTaskType = $('#selected-reporting-task-type').text();
+
+        // ensure something was selected
+        if (selectedTaskType === '') {
+            nfDialog.showOkDialog({
+                headerText: 'Settings',
+                dialogContent: 'The type of reporting task to create must be selected.'
+            });
+        } else {
+            addReportingTask(selectedTaskType);
+        }
+    };
+
+    /**
      * Adds a new reporting task of the specified type.
-     * 
+     *
      * @param {string} reportingTaskType
      */
     var addReportingTask = function (reportingTaskType) {
-        var revision = nf.Client.getRevision();
-
-        // get the desired availability
-        var availability;
-        if (nf.Canvas.isClustered()) {
-            availability = $('#reporting-task-availability-combo').combo('getSelectedOption').value;
-        } else {
-            availability = config.node;
-        }
+        // build the reporting task entity
+        var reportingTaskEntity = {
+            'revision': nfClient.getRevision({
+                'revision': {
+                    'version': 0
+                }
+            }),
+            'component': {
+                'type': reportingTaskType
+            }
+        };
 
         // add the new reporting task
         var addTask = $.ajax({
             type: 'POST',
-            url: config.urls.reportingTasks + '/' + encodeURIComponent(availability),
-            data: {
-                version: revision.version,
-                clientId: revision.clientId,
-                type: reportingTaskType
-            },
-            dataType: 'json'
-        }).done(function (response) {
-            // update the revision
-            nf.Client.setRevision(response.revision);
-
+            url: config.urls.createReportingTask,
+            data: JSON.stringify(reportingTaskEntity),
+            dataType: 'json',
+            contentType: 'application/json'
+        }).done(function (reportingTaskEntity) {
             // add the item
-            var reportingTask = response.reportingTask;
             var reportingTaskGrid = $('#reporting-tasks-table').data('gridInstance');
             var reportingTaskData = reportingTaskGrid.getData();
-            reportingTaskData.addItem(reportingTask);
+            reportingTaskData.addItem(reportingTaskEntity);
 
             // resort
             reportingTaskData.reSort();
             reportingTaskGrid.invalidate();
 
             // select the new reporting task
-            var row = reportingTaskData.getRowById(reportingTask.id);
+            var row = reportingTaskData.getRowById(reportingTaskEntity.id);
             reportingTaskGrid.setSelectedRows([row]);
             reportingTaskGrid.scrollRowIntoView(row);
-        }).fail(nf.Common.handleAjaxError);
+        }).fail(nfErrorHandler.handleAjaxError);
 
         // hide the dialog
         $('#new-reporting-task-dialog').modal('hide');
@@ -1033,53 +464,43 @@ nf.Settings = (function () {
      * Initializes the new reporting task dialog.
      */
     var initNewReportingTaskDialog = function () {
-        // specify the combo options
-        $('#reporting-task-type-filter-options').combo({
-            options: [{
-                    text: 'by type',
-                    value: 'label'
-                }, {
-                    text: 'by tag',
-                    value: 'tags'
-                }],
-            select: function (option) {
+        // define the function for filtering the list
+        $('#reporting-task-type-filter').on('keyup', function (e) {
+            var code = e.keyCode ? e.keyCode : e.which;
+            if (code === $.ui.keyCode.ENTER) {
+                // get the grid reference
+                var grid = $('#reporting-task-types-table').data('gridInstance');
+                var selected = grid.getSelectedRows();
+
+                if (selected.length > 0) {
+                    // grid configured with multi-select = false
+                    var item = grid.getDataItem(selected[0]);
+                    if (isSelectable(item)) {
+                        addSelectedReportingTask();
+                    }
+                }
+            } else {
                 applyReportingTaskTypeFilter();
             }
         });
 
-        // specify the reporting task availability
-        if (nf.Canvas.isClustered()) {
-            $('#reporting-task-availability-combo').combo({
-                options: [{
-                        text: 'Node',
-                        value: config.node,
-                        description: 'This reporting task will be available on the nodes only.'
-                    }, {
-                        text: 'Cluster Manager',
-                        value: config.ncm,
-                        description: 'This reporting task will be available on the cluster manager only.'
-                    }]
-            });
-            $('#reporting-task-availability-container').show();
-        }
-
-        // define the function for filtering the list
-        $('#reporting-task-type-filter').keyup(function () {
-            applyReportingTaskTypeFilter();
-        }).focus(function () {
-            if ($(this).hasClass(config.styles.filterList)) {
-                $(this).removeClass(config.styles.filterList).val('');
-            }
-        }).blur(function () {
-            if ($(this).val() === '') {
-                $(this).addClass(config.styles.filterList).val(config.filterText);
-            }
-        }).addClass(config.styles.filterList).val(config.filterText);
-
         // initialize the processor type table
         var reportingTaskTypesColumns = [
-            {id: 'type', name: 'Type', field: 'label', sortable: false, resizable: true},
-            {id: 'tags', name: 'Tags', field: 'tags', sortable: false, resizable: true}
+            {
+                id: 'type',
+                name: 'Type',
+                field: 'label',
+                formatter: nfCommon.typeFormatter,
+                sortable: false,
+                resizable: true
+            },
+            {
+                id: 'tags',
+                name: 'Tags',
+                field: 'tags',
+                sortable: false,
+                resizable: true
+            }
         ];
 
         // initialize the dataview
@@ -1088,8 +509,7 @@ nf.Settings = (function () {
         });
         reportingTaskTypesData.setItems([]);
         reportingTaskTypesData.setFilterArgs({
-            searchString: getReportingTaskTypeFilterText(),
-            property: $('#reporting-task-type-filter-options').combo('getSelectedOption').value
+            searchString: getReportingTaskTypeFilterText()
         });
         reportingTaskTypesData.setFilter(filterReportingTaskTypes);
 
@@ -1104,24 +524,40 @@ nf.Settings = (function () {
                 var reportingTaskType = reportingTaskTypesGrid.getDataItem(reportingTaskTypeIndex);
 
                 // set the reporting task type description
-                if (nf.Common.isBlank(reportingTaskType.description)) {
-                    $('#reporting-task-type-description').attr('title', '').html('<span class="unset">No description specified</span>');
-                } else {
-                    $('#reporting-task-type-description').html(reportingTaskType.description).ellipsis();
+                if (nfCommon.isDefinedAndNotNull(reportingTaskType)) {
+                    // show the selected reporting task
+                    $('#reporting-task-description-container').show();
+
+                    if (nfCommon.isBlank(reportingTaskType.description)) {
+                        $('#reporting-task-type-description')
+                            .attr('title', '')
+                            .html('<span class="unset">No description specified</span>');
+                    } else {
+                        $('#reporting-task-type-description')
+                            .width($('#reporting-task-description-container').innerWidth() - 1)
+                            .html(reportingTaskType.description)
+                            .ellipsis();
+                    }
+
+                    // populate the dom
+                    $('#reporting-task-type-name').text(reportingTaskType.label).ellipsis();
+                    $('#selected-reporting-task-name').text(reportingTaskType.label);
+                    $('#selected-reporting-task-type').text(reportingTaskType.type);
+
+                    // refresh the buttons based on the current selection
+                    $('#new-reporting-task-dialog').modal('refreshButtons');
                 }
-
-                // populate the dom
-                $('#reporting-task-type-name').text(reportingTaskType.label).ellipsis();
-                $('#selected-reporting-task-name').text(reportingTaskType.label);
-                $('#selected-reporting-task-type').text(reportingTaskType.type);
-
-                // show the selected reporting task
-                $('#reporting-task-description-container').show();
             }
         });
         reportingTaskTypesGrid.onDblClick.subscribe(function (e, args) {
             var reportingTaskType = reportingTaskTypesGrid.getDataItem(args.row);
-            addReportingTask(reportingTaskType.type);
+
+            if (isSelectable(reportingTaskType)) {
+                addReportingTask(reportingTaskType.type);
+            }
+        });
+        reportingTaskTypesGrid.onViewportChanged.subscribe(function (e, args) {
+            nfCommon.cleanUpTooltips($('#reporting-task-types-table'), 'div.view-usage-restriction');
         });
 
         // wire up the dataview to the grid
@@ -1139,7 +575,31 @@ nf.Settings = (function () {
         reportingTaskTypesData.syncGridSelection(reportingTaskTypesGrid, true);
 
         // hold onto an instance of the grid
-        $('#reporting-task-types-table').data('gridInstance', reportingTaskTypesGrid);
+        $('#reporting-task-types-table').data('gridInstance', reportingTaskTypesGrid).on('mouseenter', 'div.slick-cell', function (e) {
+            var usageRestriction = $(this).find('div.view-usage-restriction');
+            if (usageRestriction.length && !usageRestriction.data('qtip')) {
+                var rowId = $(this).find('span.row-id').text();
+
+                // get the status item
+                var item = reportingTaskTypesData.getItemById(rowId);
+
+                // show the tooltip
+                if (nfCommon.isDefinedAndNotNull(item.usageRestriction)) {
+                    usageRestriction.qtip($.extend({}, nfCommon.config.tooltipConfig, {
+                        content: item.usageRestriction,
+                        position: {
+                            container: $('#summary'),
+                            at: 'bottom right',
+                            my: 'top left',
+                            adjust: {
+                                x: 4,
+                                y: 4
+                            }
+                        }
+                    }));
+                }
+            }
+        });
 
         // load the available reporting tasks
         $.ajax({
@@ -1158,9 +618,10 @@ nf.Settings = (function () {
                 // add the documented type
                 reportingTaskTypesData.addItem({
                     id: id++,
-                    label: nf.Common.substringAfterLast(documentedType.type, '.'),
+                    label: nfCommon.substringAfterLast(documentedType.type, '.'),
                     type: documentedType.type,
-                    description: nf.Common.escapeHtml(documentedType.description),
+                    description: nfCommon.escapeHtml(documentedType.description),
+                    usageRestriction: nfCommon.escapeHtml(documentedType.usageRestriction),
                     tags: documentedType.tags.join(', ')
                 });
 
@@ -1182,31 +643,43 @@ nf.Settings = (function () {
                 select: applyReportingTaskTypeFilter,
                 remove: applyReportingTaskTypeFilter
             });
-        }).fail(nf.Common.handleAjaxError);
+        }).fail(nfErrorHandler.handleAjaxError);
 
         // initialize the reporting task dialog
         $('#new-reporting-task-dialog').modal({
+            scrollableContentStyle: 'scrollable',
             headerText: 'Add Reporting Task',
-            overlayBackground: false,
             buttons: [{
-                    buttonText: 'Add',
-                    handler: {
-                        click: function () {
-                            var selectedTaskType = $('#selected-reporting-task-type').text();
-                            
-                            // ensure something was selected
-                            if (selectedTaskType === '') {
-                                nf.Dialog.showOkDialog({
-                                    dialogContent: 'The type of reporting task to create must be selected.',
-                                    overlayBackground: false
-                                });
-                            } else {
-                                addReportingTask(selectedTaskType);
-                            }
-                        }
+                buttonText: 'Add',
+                color: {
+                    base: '#728E9B',
+                    hover: '#004849',
+                    text: '#ffffff'
+                },
+                disabled: function () {
+                    var selected = reportingTaskTypesGrid.getSelectedRows();
+
+                    if (selected.length > 0) {
+                        // grid configured with multi-select = false
+                        var item = reportingTaskTypesGrid.getDataItem(selected[0]);
+                        return isSelectable(item) === false;
+                    } else {
+                        return reportingTaskTypesGrid.getData().getLength() === 0;
                     }
-                }, {
+                },
+                handler: {
+                    click: function () {
+                        addSelectedReportingTask();
+                    }
+                }
+            },
+                {
                     buttonText: 'Cancel',
+                    color: {
+                        base: '#E3E8EB',
+                        hover: '#C7D2D7',
+                        text: '#004849'
+                    },
                     handler: {
                         click: function () {
                             $(this).modal('hide');
@@ -1219,7 +692,7 @@ nf.Settings = (function () {
                     clearSelectedReportingTask();
 
                     // clear any filter strings
-                    $('#reporting-task-type-filter').addClass(config.styles.filterList).val(config.filterText);
+                    $('#reporting-task-type-filter').val('');
 
                     // clear the tagcloud
                     $('#reporting-task-tag-cloud').tagcloud('clearSelectedTags');
@@ -1231,11 +704,14 @@ nf.Settings = (function () {
                     var reportingTaskTypesGrid = $('#reporting-task-types-table').data('gridInstance');
                     reportingTaskTypesGrid.setSelectedRows([]);
                     reportingTaskTypesGrid.resetActiveCell();
+                },
+                resize: function () {
+                    $('#reporting-task-type-description')
+                        .width($('#reporting-task-description-container').innerWidth() - 1)
+                        .text($('#reporting-task-type-description').attr('title'))
+                        .ellipsis();
                 }
             }
-        }).draggable({
-            containment: 'parent',
-            handle: '.dialog-header'
         });
     };
 
@@ -1247,91 +723,132 @@ nf.Settings = (function () {
         initNewReportingTaskDialog();
 
         var moreReportingTaskDetails = function (row, cell, value, columnDef, dataContext) {
-            var markup = '<img src="images/iconDetails.png" title="View Details" class="pointer view-reporting-task" style="margin-top: 5px; float: left;" />';
-            var hasErrors = !nf.Common.isEmpty(dataContext.validationErrors);
-            var hasBulletins = !nf.Common.isEmpty(dataContext.bulletins);
-            
+            if (!dataContext.permissions.canRead) {
+                return '';
+            }
+
+            var markup = '<div title="View Details" class="pointer view-reporting-task fa fa-info-circle"></div>';
+
+            // always include a button to view the usage
+            markup += '<div title="Usage" class="pointer reporting-task-usage fa fa-book"></div>';
+
+            var hasErrors = !nfCommon.isEmpty(dataContext.component.validationErrors);
+            var hasBulletins = !nfCommon.isEmpty(dataContext.bulletins);
+
             if (hasErrors) {
-                markup += '<img src="images/iconAlert.png" class="has-errors" style="margin-top: 4px; margin-left: 1px; float: left;" />';
+                markup += '<div class="pointer has-errors fa fa-warning" ></div>';
             }
-            
+
             if (hasBulletins) {
-                markup += '<img src="images/iconBulletin.png" class="has-bulletins" style="margin-top: 5px; margin-left: 5px; float: left;"/>';
+                markup += '<div class="has-bulletins fa fa-sticky-note-o"></div>';
             }
-            
+
             if (hasErrors || hasBulletins) {
-                markup += '<span class="hidden row-id">' + nf.Common.escapeHtml(dataContext.id) + '</span>';
+                markup += '<span class="hidden row-id">' + nfCommon.escapeHtml(dataContext.component.id) + '</span>';
             }
-            
+
             return markup;
         };
-        
+
         var reportingTaskRunStatusFormatter = function (row, cell, value, columnDef, dataContext) {
+            if (!dataContext.permissions.canRead) {
+                return '';
+            }
+
             // determine the appropriate label
-            var label;
-            if (!nf.Common.isEmpty(dataContext.validationErrors)) {
+            var icon = '', label = '';
+            if (!nfCommon.isEmpty(dataContext.component.validationErrors)) {
                 label = 'Invalid';
+                icon = 'invalid fa fa-warning';
             } else {
-                if (value === 'STOPPED') {
+                if (dataContext.component.state === 'STOPPED') {
                     label = 'Stopped';
-                } else if (value === 'RUNNING') {
+                    icon = 'fa fa-stop stopped';
+                } else if (dataContext.component.state === 'RUNNING') {
                     label = 'Running';
+                    icon = 'fa fa-play running';
                 } else {
                     label = 'Disabled';
+                    icon = 'icon icon-enable-false disabled';
                 }
             }
-            
+
             // include the active thread count if appropriate
             var activeThreadCount = '';
-            if (nf.Common.isDefinedAndNotNull(dataContext.activeThreadCount) && dataContext.activeThreadCount > 0) {
-                activeThreadCount = '(' + dataContext.activeThreadCount + ')';
+            if (nfCommon.isDefinedAndNotNull(dataContext.component.activeThreadCount) && dataContext.component.activeThreadCount > 0) {
+                activeThreadCount = '(' + dataContext.component.activeThreadCount + ')';
             }
-            
+
             // format the markup
-            var formattedValue = '<div class="' + nf.Common.escapeHtml(label.toLowerCase()) + '" style="margin-top: 3px;"></div>';
-            return formattedValue + '<div class="status-text" style="margin-top: 2px; margin-left: 4px; float: left;">' + nf.Common.escapeHtml(label) + '</div><div style="float: left; margin-left: 4px;">' + nf.Common.escapeHtml(activeThreadCount) + '</div>';
+            var formattedValue = '<div layout="row"><div class="' + icon + '" style="margin-top: 3px;"></div>';
+            return formattedValue + '<div class="status-text" style="margin-top: 4px;">' + nfCommon.escapeHtml(label) + '</div><div style="float: left; margin-left: 4px;">' + nfCommon.escapeHtml(activeThreadCount) + '</div></div>';
         };
-        
+
         var reportingTaskActionFormatter = function (row, cell, value, columnDef, dataContext) {
             var markup = '';
 
-            // only DFMs can edit reporting tasks
-            if (nf.Common.isDFM()) {
-                if (dataContext.state === 'RUNNING') {
-                    markup += '<img src="images/iconStop.png" title="Stop" class="pointer stop-reporting-task" style="margin-top: 2px;" />&nbsp;';
-                } else if (dataContext.state === 'STOPPED' || dataContext.state === 'DISABLED') {
-                    markup += '<img src="images/iconEdit.png" title="Edit" class="pointer edit-reporting-task" style="margin-top: 2px;" />&nbsp;';
-                 
+            if (dataContext.permissions.canRead && dataContext.permissions.canWrite) {
+                if (dataContext.component.state === 'RUNNING') {
+                    markup += '<div title="Stop" class="pointer stop-reporting-task fa fa-stop" style="margin-top: 2px; margin-right: 3px;" ></div>';
+                } else if (dataContext.component.state === 'STOPPED' || dataContext.component.state === 'DISABLED') {
+                    markup += '<div title="Edit" class="pointer edit-reporting-task fa fa-pencil" style="margin-top: 2px; margin-right: 3px;" ></div>';
+
                     // support starting when stopped and no validation errors
-                    if (dataContext.state === 'STOPPED' && nf.Common.isEmpty(dataContext.validationErrors)) {
-                        markup += '<img src="images/iconRun.png" title="Start" class="pointer start-reporting-task" style="margin-top: 2px;"/>&nbsp;';
+                    if (dataContext.component.state === 'STOPPED' && nfCommon.isEmpty(dataContext.component.validationErrors)) {
+                        markup += '<div title="Start" class="pointer start-reporting-task fa fa-play" style="margin-top: 2px; margin-right: 3px;"></div>';
                     }
-                    
-                    markup += '<img src="images/iconDelete.png" title="Remove" class="pointer delete-reporting-task" style="margin-top: 2px;" />&nbsp;';
+                }
+
+                if (dataContext.component.persistsState === true) {
+                    markup += '<div title="View State" class="pointer view-state-reporting-task fa fa-tasks" style="margin-top: 2px; margin-right: 3px;" ></div>';
                 }
             }
 
-            // always include a button to view the usage
-            markup += '<img src="images/iconUsage.png" title="Usage" class="pointer reporting-task-usage" style="margin-top: 2px;"/>&nbsp;';
+            if (dataContext.permissions.canWrite && nfCommon.canModifyController()) {
+                markup += '<div title="Remove" class="pointer delete-reporting-task fa fa-trash" style="margin-top: 2px; margin-right: 3px;" ></div>';
+            }
+
+            // allow policy configuration conditionally
+            if (nfCanvasUtils.isConfigurableAuthorizer() && nfCommon.canAccessTenants()) {
+                markup += '<div title="Access Policies" class="pointer edit-access-policies fa fa-key" style="margin-top: 2px;"></div>';
+            }
 
             return markup;
         };
 
         // define the column model for the reporting tasks table
         var reportingTasksColumnModel = [
-            {id: 'moreDetails', field: 'moreDetails', name: '&nbsp;', resizable: false, formatter: moreReportingTaskDetails, sortable: true, width: 65, maxWidth: 65},
-            {id: 'name', field: 'name', name: 'Name', sortable: true, resizable: true},
-            {id: 'type', field: 'type', name: 'Type', sortable: true, resizable: true, formatter: typeFormatter},
-            {id: 'state', field: 'state', name: 'Run Status', sortable: true, resizeable: true, formatter: reportingTaskRunStatusFormatter}
+            {
+                id: 'moreDetails',
+                name: '&nbsp;',
+                resizable: false,
+                formatter: moreReportingTaskDetails,
+                sortable: true,
+                width: 90,
+                maxWidth: 90,
+                toolTip: 'Sorts based on presence of bulletins'
+            },
+            {id: 'name', name: 'Name', sortable: true, resizable: true, formatter: nameFormatter},
+            {id: 'type', name: 'Type', sortable: true, resizable: true, formatter: typeFormatter},
+            {
+                id: 'state',
+                name: 'Run Status',
+                sortable: true,
+                resizeable: true,
+                formatter: reportingTaskRunStatusFormatter
+            }
         ];
 
-        // only show availability when clustered
-        if (nf.Canvas.isClustered()) {
-            reportingTasksColumnModel.push({id: 'availability', field: 'availability', name: 'Availability', formatter: availabilityFormatter, sortable: true, resizeable: true});
-        }
-        
         // action column should always be last
-        reportingTasksColumnModel.push({id: 'actions', name: '&nbsp;', resizable: false, formatter: reportingTaskActionFormatter, sortable: false, width: 90, maxWidth: 90});
+        reportingTasksColumnModel.push({
+            id: 'actions',
+            name: '&nbsp;',
+            resizable: false,
+            formatter: reportingTaskActionFormatter,
+            sortable: false,
+            width: 90,
+            maxWidth: 90
+        });
 
         // initialize the dataview
         var reportingTasksData = new Slick.Data.DataView({
@@ -1352,7 +869,7 @@ nf.Settings = (function () {
         reportingTasksGrid.setSortColumn('name', true);
         reportingTasksGrid.onSort.subscribe(function (e, args) {
             sort({
-                columnId: args.sortCol.field,
+                columnId: args.sortCol.id,
                 sortAsc: args.sortAsc
             }, reportingTasksData);
         });
@@ -1362,32 +879,41 @@ nf.Settings = (function () {
             var target = $(e.target);
 
             // get the service at this row
-            var reportingTask = reportingTasksData.getItem(args.row);
+            var reportingTaskEntity = reportingTasksData.getItem(args.row);
 
             // determine the desired action
             if (reportingTasksGrid.getColumns()[args.cell].id === 'actions') {
                 if (target.hasClass('edit-reporting-task')) {
-                    nf.ReportingTask.showConfiguration(reportingTask);
+                    nfReportingTask.showConfiguration(reportingTaskEntity);
                 } else if (target.hasClass('start-reporting-task')) {
-                    nf.ReportingTask.start(reportingTask);
+                    nfReportingTask.start(reportingTaskEntity);
                 } else if (target.hasClass('stop-reporting-task')) {
-                    nf.ReportingTask.stop(reportingTask);
+                    nfReportingTask.stop(reportingTaskEntity);
                 } else if (target.hasClass('delete-reporting-task')) {
-                    nf.ReportingTask.remove(reportingTask);
-                } else if (target.hasClass('reporting-task-usage')) {
+                    nfReportingTask.promptToDeleteReportingTask(reportingTaskEntity);
+                } else if (target.hasClass('view-state-reporting-task')) {
+                    var canClear = reportingTaskEntity.component.state === 'STOPPED' && reportingTaskEntity.component.activeThreadCount === 0;
+                    nfComponentState.showState(reportingTaskEntity, canClear);
+                } else if (target.hasClass('edit-access-policies')) {
+                    // show the policies for this service
+                    nfPolicyManagement.showReportingTaskPolicy(reportingTaskEntity);
+
                     // close the settings dialog
                     $('#shell-close-button').click();
-                    
-                    // open the documentation for this reporting task
-                    nf.Shell.showPage('../nifi-docs/documentation?' + $.param({
-                        select: nf.Common.substringAfterLast(reportingTask.type, '.')
-                    })).done(function() {
-                        nf.Settings.showSettings();
-                    });
                 }
             } else if (reportingTasksGrid.getColumns()[args.cell].id === 'moreDetails') {
                 if (target.hasClass('view-reporting-task')) {
-                    nf.ReportingTask.showDetails(reportingTask);
+                    nfReportingTask.showDetails(reportingTaskEntity);
+                } else if (target.hasClass('reporting-task-usage')) {
+                    // close the settings dialog
+                    $('#shell-close-button').click();
+
+                    // open the documentation for this reporting task
+                    nfShell.showPage('../nifi-docs/documentation?' + $.param({
+                            select: nfCommon.substringAfterLast(reportingTaskEntity.component.type, '.')
+                        })).done(function () {
+                        nfSettings.showSettings();
+                    });
                 }
             }
         });
@@ -1405,113 +931,163 @@ nf.Settings = (function () {
 
         // hold onto an instance of the grid
         $('#reporting-tasks-table').data('gridInstance', reportingTasksGrid).on('mouseenter', 'div.slick-cell', function (e) {
-            var errorIcon = $(this).find('img.has-errors');
+            var errorIcon = $(this).find('div.has-errors');
             if (errorIcon.length && !errorIcon.data('qtip')) {
                 var taskId = $(this).find('span.row-id').text();
 
                 // get the task item
-                var item = reportingTasksData.getItemById(taskId);
+                var reportingTaskEntity = reportingTasksData.getItemById(taskId);
 
                 // format the errors
-                var tooltip = nf.Common.formatUnorderedList(item.validationErrors);
+                var tooltip = nfCommon.formatUnorderedList(reportingTaskEntity.component.validationErrors);
 
                 // show the tooltip
-                if (nf.Common.isDefinedAndNotNull(tooltip)) {
-                    errorIcon.qtip($.extend({
-                        content: tooltip,
-                        position: {
-                            target: 'mouse',
-                            viewport: $(window),
-                            adjust: {
-                                x: 8,
-                                y: 8,
-                                method: 'flipinvert flipinvert'
+                if (nfCommon.isDefinedAndNotNull(tooltip)) {
+                    errorIcon.qtip($.extend({},
+                        nfCommon.config.tooltipConfig,
+                        {
+                            content: tooltip,
+                            position: {
+                                target: 'mouse',
+                                viewport: $('#shell-container'),
+                                adjust: {
+                                    x: 8,
+                                    y: 8,
+                                    method: 'flipinvert flipinvert'
+                                }
                             }
-                        }
-                    }, nf.Common.config.tooltipConfig));
+                        }));
                 }
             }
-            
-            var bulletinIcon = $(this).find('img.has-bulletins');
+
+            var bulletinIcon = $(this).find('div.has-bulletins');
             if (bulletinIcon.length && !bulletinIcon.data('qtip')) {
                 var taskId = $(this).find('span.row-id').text();
 
                 // get the task item
-                var item = reportingTasksData.getItemById(taskId);
-                
+                var reportingTaskEntity = reportingTasksData.getItemById(taskId);
+
                 // format the tooltip
-                var bulletins = nf.Common.getFormattedBulletins(item.bulletins);
-                var tooltip = nf.Common.formatUnorderedList(bulletins);
+                var bulletins = nfCommon.getFormattedBulletins(reportingTaskEntity.bulletins);
+                var tooltip = nfCommon.formatUnorderedList(bulletins);
 
                 // show the tooltip
-                if (nf.Common.isDefinedAndNotNull(tooltip)) {
-                    bulletinIcon.qtip($.extend({}, nf.Common.config.tooltipConfig, {
-                        content: tooltip,
-                        position: {
-                            target: 'mouse',
-                            viewport: $(window),
-                            adjust: {
-                                x: 8,
-                                y: 8,
-                                method: 'flipinvert flipinvert'
+                if (nfCommon.isDefinedAndNotNull(tooltip)) {
+                    bulletinIcon.qtip($.extend({},
+                        nfCommon.config.tooltipConfig,
+                        {
+                            content: tooltip,
+                            position: {
+                                target: 'mouse',
+                                viewport: $('#shell-container'),
+                                adjust: {
+                                    x: 8,
+                                    y: 8,
+                                    method: 'flipinvert flipinvert'
+                                }
                             }
-                        }
-                    }));
+                        }));
                 }
             }
         });
     };
 
     /**
+     * Loads the settings.
+     */
+    var loadSettings = function () {
+        var setUnauthorizedText = function () {
+            $('#read-only-maximum-timer-driven-thread-count-field').addClass('unset').text('Unauthorized');
+            $('#read-only-maximum-event-driven-thread-count-field').addClass('unset').text('Unauthorized');
+        };
+
+        var setEditable = function (editable) {
+            if (editable) {
+                $('#general-settings div.editable').show();
+                $('#general-settings div.read-only').hide();
+                $('#settings-save').show();
+            } else {
+                $('#general-settings div.editable').hide();
+                $('#general-settings div.read-only').show();
+                $('#settings-save').hide();
+            }
+        };
+
+        var settings = $.Deferred(function (deferred) {
+            $.ajax({
+                type: 'GET',
+                url: config.urls.controllerConfig,
+                dataType: 'json'
+            }).done(function (response) {
+                if (response.permissions.canWrite) {
+                    // populate the settings
+                    $('#maximum-timer-driven-thread-count-field').removeClass('unset').val(response.component.maxTimerDrivenThreadCount);
+                    $('#maximum-event-driven-thread-count-field').removeClass('unset').val(response.component.maxEventDrivenThreadCount);
+
+                    setEditable(true);
+
+                    // register the click listener for the save button
+                    $('#settings-save').off('click').on('click', function () {
+                        saveSettings(response.revision.version);
+                    });
+                } else {
+                    if (response.permissions.canRead) {
+                        // populate the settings
+                        $('#read-only-maximum-timer-driven-thread-count-field').removeClass('unset').text(response.component.maxTimerDrivenThreadCount);
+                        $('#read-only-maximum-event-driven-thread-count-field').removeClass('unset').text(response.component.maxEventDrivenThreadCount);
+                    } else {
+                        setUnauthorizedText();
+                    }
+
+                    setEditable(false);
+                }
+                deferred.resolve();
+            }).fail(function (xhr, status, error) {
+                if (xhr.status === 403) {
+                    setUnauthorizedText();
+                    setEditable(false);
+                    deferred.resolve();
+                } else {
+                    deferred.reject(xhr, status, error);
+                }
+            });
+        }).promise();
+
+        // load the controller services
+        var controllerServicesUri = config.urls.api + '/flow/controller/controller-services';
+        var controllerServicesXhr = nfControllerServices.loadControllerServices(controllerServicesUri, getControllerServicesTable());
+
+        // load the reporting tasks
+        var reportingTasks = loadReportingTasks();
+
+        // return a deferred for all parts of the settings
+        return $.when(settings, controllerServicesXhr, reportingTasks).done(function (settingsResult, controllerServicesResult) {
+            var controllerServicesResponse = controllerServicesResult[0];
+
+            // update the current time
+            $('#settings-last-refreshed').text(controllerServicesResponse.currentTime);
+        }).fail(nfErrorHandler.handleAjaxError);
+    };
+
+    /**
      * Loads the reporting tasks.
      */
     var loadReportingTasks = function () {
-        var tasks = [];
-
-        // get the reporting tasks that are running on the nodes
-        var nodeReportingTasks = $.ajax({
+        return $.ajax({
             type: 'GET',
-            url: config.urls.reportingTasks + '/' + encodeURIComponent(config.node),
+            url: config.urls.reportingTasks,
             dataType: 'json'
         }).done(function (response) {
-            var nodeTasks = response.reportingTasks;
-            if (nf.Common.isDefinedAndNotNull(nodeTasks)) {
-                $.each(nodeTasks, function (_, nodeTask) {
-                    tasks.push($.extend({
-                        bulletins: []
-                    }, nodeTask));
-                });
-            }
-        });
+            var tasks = [];
+            $.each(response.reportingTasks, function (_, task) {
+                tasks.push($.extend({
+                    bulletins: []
+                }, task));
+            });
 
-        // get the reporting tasks that are running on the ncm
-        var ncmReportingTasks = $.Deferred(function (deferred) {
-            if (nf.Canvas.isClustered()) {
-                $.ajax({
-                    type: 'GET',
-                    url: config.urls.reportingTasks + '/' + encodeURIComponent(config.ncm),
-                    dataType: 'json'
-                }).done(function (response) {
-                    var ncmTasks = response.reportingTasks;
-                    if (nf.Common.isDefinedAndNotNull(ncmTasks)) {
-                        $.each(ncmTasks, function (_, ncmTask) {
-                            tasks.push(ncmTask);
-                        });
-                    }
-                    deferred.resolve();
-                }).fail(function () {
-                    deferred.reject();
-                });
-            } else {
-                deferred.resolve();
-            }
-        }).promise();
-
-        // add all reporting tasks
-        return $.when(nodeReportingTasks, ncmReportingTasks).done(function () {
             var reportingTasksElement = $('#reporting-tasks-table');
-            nf.Common.cleanUpTooltips(reportingTasksElement, 'img.has-errors');
-            nf.Common.cleanUpTooltips(reportingTasksElement, 'img.has-bulletins');
+            nfCommon.cleanUpTooltips(reportingTasksElement, 'div.has-errors');
+            nfCommon.cleanUpTooltips(reportingTasksElement, 'div.has-bulletins');
 
             var reportingTasksGrid = reportingTasksElement.data('gridInstance');
             var reportingTasksData = reportingTasksGrid.getData();
@@ -1523,84 +1099,115 @@ nf.Settings = (function () {
         });
     };
 
-    return {
+    /**
+     * Shows the process group configuration.
+     */
+    var showSettings = function () {
+        // show the settings dialog
+        nfShell.showContent('#settings').done(function () {
+            reset();
+        });
+
+        //reset content to account for possible policy changes
+        $('#settings-tabs').find('.selected-tab').click();
+
+        // adjust the table size
+        nfSettings.resetTableSize();
+    };
+
+    /**
+     * Reset state of this dialog.
+     */
+    var reset = function () {
+        // reset button state
+        $('#settings-save').mouseout();
+    };
+
+    var nfSettings = {
         /**
-         * Initializes the status page.
+         * Initializes the settings page.
          */
         init: function () {
             // initialize the settings tabs
             $('#settings-tabs').tabbs({
-                tabStyle: 'settings-tab',
-                selectedTabStyle: 'settings-selected-tab',
+                tabStyle: 'tab',
+                selectedTabStyle: 'selected-tab',
+                scrollableTabContentStyle: 'scrollable',
                 tabs: [{
-                        name: 'General',
-                        tabContentId: 'general-settings-tab-content'
-                    }, {
-                        name: 'Controller Services',
-                        tabContentId: 'controller-services-tab-content'
-                    }, {
-                        name: 'Reporting Tasks',
-                        tabContentId: 'reporting-tasks-tab-content'
-                    }],
+                    name: 'General',
+                    tabContentId: 'general-settings-tab-content'
+                }, {
+                    name: 'Controller Services',
+                    tabContentId: 'controller-services-tab-content'
+                }, {
+                    name: 'Reporting Tasks',
+                    tabContentId: 'reporting-tasks-tab-content'
+                }],
                 select: function () {
                     var tab = $(this).text();
                     if (tab === 'General') {
+                        $('#controller-cs-availability').hide();
                         $('#new-service-or-task').hide();
+                        $('#settings-save').show();
                     } else {
-                        $('#new-service-or-task').show();
+                        var canModifyController = false;
+                        if (nfCommon.isDefinedAndNotNull(nfCommon.currentUser)) {
+                            // only consider write permissions for creating new controller services/reporting tasks
+                            canModifyController = nfCommon.currentUser.controllerPermissions.canWrite === true;
+                        }
 
-                        // update the tooltip on the button
-                        $('#new-service-or-task').attr('title', function () {
-                            if (tab === 'Controller Services') {
-                                return 'Create a new controller service';
-                            } else if (tab === 'Reporting Tasks') {
-                                return 'Create a new reporting task';
-                            }
-                        });
+                        if (canModifyController) {
+                            $('#new-service-or-task').show();
+                            $('div.controller-settings-table').css('top', '32px');
+
+                            // update the tooltip on the button
+                            $('#new-service-or-task').attr('title', function () {
+                                if (tab === 'Controller Services') {
+                                    $('#settings-save').hide();
+                                    return 'Create a new controller service';
+                                } else if (tab === 'Reporting Tasks') {
+                                    $('#settings-save').hide();
+                                    return 'Create a new reporting task';
+                                }
+                            });
+                        } else {
+                            $('#new-service-or-task').hide();
+                            $('div.controller-settings-table').css('top', '0');
+                        }
+
+                        if (tab === 'Controller Services') {
+                            $('#controller-cs-availability').show();
+                        } else if (tab === 'Reporting Tasks') {
+                            $('#controller-cs-availability').hide();
+                        }
 
                         // resize the table
-                        nf.Settings.resetTableSize();
+                        nfSettings.resetTableSize();
                     }
                 }
             });
 
-            // setup the tooltip for the refresh icon
-            $('#settings-refresh-required-icon').qtip($.extend({
-                content: 'This flow has been modified by another user. Please refresh.'
-            }, nf.CanvasUtils.config.systemTooltipConfig));
-
-            // refresh the system diagnostics when clicked
-            nf.Common.addHoverEffect('#settings-refresh-button', 'button-refresh', 'button-refresh-hover').click(function () {
-                if ($('#settings-refresh-required-icon').is(':visible')) {
-                    nf.CanvasHeader.reloadAndClearWarnings();
-                } else {
-                    nf.Settings.loadSettings();
-                }
+            // settings refresh button
+            $('#settings-refresh-button').click(function () {
+                loadSettings();
             });
 
             // create a new controller service or reporting task
             $('#new-service-or-task').on('click', function () {
-                var selectedTab = $('li.settings-selected-tab').text();
+                var selectedTab = $('#settings-tabs li.selected-tab').text();
                 if (selectedTab === 'Controller Services') {
-                    $('#new-controller-service-dialog').modal('show');
-                    
-                    // reset the canvas size after the dialog is shown
-                    var controllerServiceTypesGrid = $('#controller-service-types-table').data('gridInstance');
-                    if (nf.Common.isDefinedAndNotNull(controllerServiceTypesGrid)) {
-                        controllerServiceTypesGrid.resizeCanvas();
-                    }
-                    
-                    // set the initial focus
-                    $('#controller-service-type-filter').focus();
+                    var controllerServicesUri = config.urls.api + '/controller/controller-services';
+                    nfControllerServices.promptNewControllerService(controllerServicesUri, getControllerServicesTable());
                 } else if (selectedTab === 'Reporting Tasks') {
                     $('#new-reporting-task-dialog').modal('show');
-                    
+
                     // reset the canvas size after the dialog is shown
                     var reportingTaskTypesGrid = $('#reporting-task-types-table').data('gridInstance');
-                    if (nf.Common.isDefinedAndNotNull(reportingTaskTypesGrid)) {
+                    if (nfCommon.isDefinedAndNotNull(reportingTaskTypesGrid)) {
+                        reportingTaskTypesGrid.setSelectedRows([0]);
                         reportingTaskTypesGrid.resizeCanvas();
                     }
-                    
+
                     // set the initial focus
                     $('#reporting-task-type-filter').focus();
                 }
@@ -1608,130 +1215,81 @@ nf.Settings = (function () {
 
             // initialize each tab
             initGeneral();
-            initControllerServices();
+            nfControllerServices.init(getControllerServicesTable(), nfSettings.showSettings);
             initReportingTasks();
         },
-        
+
         /**
          * Update the size of the grid based on its container's current size.
          */
         resetTableSize: function () {
-            var controllerServicesGrid = $('#controller-services-table').data('gridInstance');
-            if (nf.Common.isDefinedAndNotNull(controllerServicesGrid)) {
-                controllerServicesGrid.resizeCanvas();
-            }
+            nfControllerServices.resetTableSize(getControllerServicesTable());
 
             var reportingTasksGrid = $('#reporting-tasks-table').data('gridInstance');
-            if (nf.Common.isDefinedAndNotNull(reportingTasksGrid)) {
+            if (nfCommon.isDefinedAndNotNull(reportingTasksGrid)) {
                 reportingTasksGrid.resizeCanvas();
             }
         },
-        
+
         /**
          * Shows the settings dialog.
          */
         showSettings: function () {
-            // show the settings dialog
-            nf.Shell.showContent('#settings').done(function () {
-                // reset button state
-                $('#settings-save').mouseout();
-            });
-            
-            // adjust the table size
-            nf.Settings.resetTableSize();
+            return loadSettings().done(showSettings);
         },
-        
+
         /**
-         * Loads the settings.
+         * Loads the settings dialogs.
          */
         loadSettings: function () {
-            var settings = $.ajax({
-                type: 'GET',
-                url: config.urls.controllerConfig,
-                dataType: 'json'
-            }).done(function (response) {
-                // ensure the config is present
-                if (nf.Common.isDefinedAndNotNull(response.config)) {
-                    // set the header
-                    $('#settings-header-text').text(response.config.name + ' Settings');
-                    $('#settings-last-refreshed').text(response.config.currentTime);
-
-                    // populate the controller settings
-                    if (nf.Common.isDFM()) {
-                        $('#data-flow-title-field').val(response.config.name);
-                        $('#data-flow-comments-field').val(response.config.comments);
-                        $('#maximum-timer-driven-thread-count-field').val(response.config.maxTimerDrivenThreadCount);
-                        $('#maximum-event-driven-thread-count-field').val(response.config.maxEventDrivenThreadCount);
-                    } else {
-                        $('#read-only-data-flow-title-field').html(nf.Common.formatValue(response.config.name));
-                        $('#read-only-data-flow-comments-field').html(nf.Common.formatValue(response.config.comments));
-                        $('#read-only-maximum-timer-driven-thread-count-field').text(response.config.maxTimerDrivenThreadCount);
-                        $('#read-only-maximum-event-driven-thread-count-field').text(response.config.maxEventDrivenThreadCount);
-                    }
-                }
-            });
-
-            // load the controller services
-            var controllerServices = loadControllerServices();
-
-            // load the reporting tasks
-            var reportingTasks = loadReportingTasks();
-
-            // return a deferred for all parts of the settings
-            return $.when(settings, controllerServices, reportingTasks).done(nf.Canvas.reloadStatus).fail(nf.Common.handleAjaxError);
+            return loadSettings();
         },
-        
+
+        /**
+         * Selects the specified controller service.
+         *
+         * @param {string} controllerServiceId
+         */
+        selectControllerService: function (controllerServiceId) {
+            var controllerServiceGrid = getControllerServicesTable().data('gridInstance');
+            var controllerServiceData = controllerServiceGrid.getData();
+
+            // select the desired service
+            var row = controllerServiceData.getRowById(controllerServiceId);
+            controllerServiceGrid.setSelectedRows([row]);
+            controllerServiceGrid.scrollRowIntoView(row);
+
+            // select the controller services tab
+            $('#settings-tabs').find('li:eq(1)').click();
+        },
+
         /**
          * Sets the controller service and reporting task bulletins in their respective tables.
-         * 
+         *
          * @param {object} controllerServiceBulletins
          * @param {object} reportingTaskBulletins
          */
-        setBulletins: function(controllerServiceBulletins, reportingTaskBulletins) {
-            // controller services
-            var controllerServicesGrid = $('#controller-services-table').data('gridInstance');
-            var controllerServicesData = controllerServicesGrid.getData();
-            controllerServicesData.beginUpdate();
-
-            // if there are some bulletins process them
-            if (!nf.Common.isEmpty(controllerServiceBulletins)) {
-                var controllerServiceBulletinsBySource = d3.nest()
-                    .key(function(d) { return d.sourceId; })
-                    .map(controllerServiceBulletins, d3.map);
-            
-                controllerServiceBulletinsBySource.forEach(function(sourceId, sourceBulletins) {
-                    var controllerService = controllerServicesData.getItemById(sourceId);
-                    if (nf.Common.isDefinedAndNotNull(controllerService)) {
-                        controllerServicesData.updateItem(sourceId, $.extend(controllerService, {
-                            bulletins: sourceBulletins
-                        }));
-                    }
-                });
-            } else {
-                // if there are no bulletins clear all
-                var controllerServices = controllerServicesData.getItems();
-                $.each(controllerServices, function(_, controllerService) {
-                    controllerServicesData.updateItem(controllerService.id, $.extend(controllerService, {
-                        bulletins: []
-                    }));
-                });
+        setBulletins: function (controllerServiceBulletins, reportingTaskBulletins) {
+            if ($('#controller-services-table').data('gridInstance')) {
+                nfControllerServices.setBulletins(getControllerServicesTable(), controllerServiceBulletins);
             }
-            controllerServicesData.endUpdate();
 
             // reporting tasks
             var reportingTasksGrid = $('#reporting-tasks-table').data('gridInstance');
             var reportingTasksData = reportingTasksGrid.getData();
             reportingTasksData.beginUpdate();
-            
+
             // if there are some bulletins process them
-            if (!nf.Common.isEmpty(reportingTaskBulletins)) {
+            if (!nfCommon.isEmpty(reportingTaskBulletins)) {
                 var reportingTaskBulletinsBySource = d3.nest()
-                    .key(function(d) { return d.sourceId; })
+                    .key(function (d) {
+                        return d.sourceId;
+                    })
                     .map(reportingTaskBulletins, d3.map);
 
-                reportingTaskBulletinsBySource.forEach(function(sourceId, sourceBulletins) {
+                reportingTaskBulletinsBySource.forEach(function (sourceId, sourceBulletins) {
                     var reportingTask = reportingTasksData.getItemById(sourceId);
-                    if (nf.Common.isDefinedAndNotNull(reportingTask)) {
+                    if (nfCommon.isDefinedAndNotNull(reportingTask)) {
                         reportingTasksData.updateItem(sourceId, $.extend(reportingTask, {
                             bulletins: sourceBulletins
                         }));
@@ -1740,7 +1298,7 @@ nf.Settings = (function () {
             } else {
                 // if there are no bulletins clear all
                 var reportingTasks = reportingTasksData.getItems();
-                $.each(reportingTasks, function(_, reportingTask) {
+                $.each(reportingTasks, function (_, reportingTask) {
                     reportingTasksData.updateItem(reportingTask.id, $.extend(reportingTask, {
                         bulletins: []
                     }));
@@ -1749,4 +1307,6 @@ nf.Settings = (function () {
             reportingTasksData.endUpdate();
         }
     };
-}());
+
+    return nfSettings;
+}));

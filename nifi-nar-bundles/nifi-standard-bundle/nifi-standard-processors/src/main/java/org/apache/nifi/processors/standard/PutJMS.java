@@ -39,14 +39,15 @@ import static org.apache.nifi.processors.standard.util.JmsProperties.MESSAGE_TTL
 import static org.apache.nifi.processors.standard.util.JmsProperties.MESSAGE_TYPE;
 import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_BYTE;
 import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_EMPTY;
+import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_MAP;
 import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_STREAM;
 import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_TEXT;
-import static org.apache.nifi.processors.standard.util.JmsProperties.MSG_TYPE_MAP;
 import static org.apache.nifi.processors.standard.util.JmsProperties.PASSWORD;
 import static org.apache.nifi.processors.standard.util.JmsProperties.REPLY_TO_QUEUE;
 import static org.apache.nifi.processors.standard.util.JmsProperties.TIMEOUT;
 import static org.apache.nifi.processors.standard.util.JmsProperties.URL;
 import static org.apache.nifi.processors.standard.util.JmsProperties.USERNAME;
+import static org.apache.nifi.processors.standard.util.JmsProperties.SSL_CONTEXT_SERVICE;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -70,13 +71,15 @@ import javax.jms.MessageProducer;
 import javax.jms.Session;
 import javax.jms.StreamMessage;
 
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.processor.ProcessContext;
@@ -89,6 +92,7 @@ import org.apache.nifi.processors.standard.util.WrappedMessageProducer;
 import org.apache.nifi.stream.io.StreamUtils;
 
 @Tags({"jms", "send", "put"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Creates a JMS Message from the contents of a FlowFile and sends the message to a JMS Server")
 @SeeAlso({GetJMSQueue.class, GetJMSTopic.class})
 public class PutJMS extends AbstractProcessor {
@@ -119,6 +123,7 @@ public class PutJMS extends AbstractProcessor {
         descriptors.add(BATCH_SIZE);
         descriptors.add(USERNAME);
         descriptors.add(PASSWORD);
+        descriptors.add(SSL_CONTEXT_SERVICE);
         descriptors.add(MESSAGE_TYPE);
         descriptors.add(MESSAGE_PRIORITY);
         descriptors.add(REPLY_TO_QUEUE);
@@ -155,7 +160,7 @@ public class PutJMS extends AbstractProcessor {
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
         final List<FlowFile> flowFiles = session.get(context.getProperty(BATCH_SIZE).asInteger().intValue());
         if (flowFiles.isEmpty()) {
             return;
@@ -236,7 +241,7 @@ public class PutJMS extends AbstractProcessor {
                 }
 
                 successfulFlowFiles.add(flowFile);
-                session.getProvenanceReporter().send(flowFile, "jms://" + context.getProperty(URL).getValue());
+                session.getProvenanceReporter().send(flowFile, context.getProperty(URL).getValue());
             }
 
             try {
@@ -246,8 +251,9 @@ public class PutJMS extends AbstractProcessor {
                 final String flowFileDescription = successfulFlowFiles.size() > 10 ? successfulFlowFiles.size() + " FlowFiles" : successfulFlowFiles.toString();
                 logger.info("Sent {} to JMS Server and transferred to 'success'", new Object[]{flowFileDescription});
             } catch (JMSException e) {
-                logger.error("Failed to commit JMS Session due to {}; rolling back session", new Object[]{e});
-                session.rollback();
+                logger.error("Failed to commit JMS Session due to {} and transferred to 'failure'", new Object[]{e});
+                session.transfer(flowFiles, REL_FAILURE);
+                context.yield();
                 wrappedProducer.close(logger);
             }
         } finally {
@@ -329,7 +335,7 @@ public class PutJMS extends AbstractProcessor {
      * @throws JMSException ex
      */
     private void copyAttributesToJmsProps(final FlowFile flowFile, final Message message) throws JMSException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         final Map<String, String> attributes = flowFile.getAttributes();
         for (final Entry<String, String> entry : attributes.entrySet()) {

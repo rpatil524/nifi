@@ -18,18 +18,17 @@
  */
 package org.apache.nifi.processors.kite;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 import java.util.Set;
+
 import org.apache.avro.Schema;
-import org.apache.avro.file.CodecFactory;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.generic.GenericData.Record;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
@@ -39,7 +38,6 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.StreamCallback;
-import org.apache.nifi.util.LongHolder;
 import org.kitesdk.data.DatasetException;
 import org.kitesdk.data.DatasetIOException;
 import org.kitesdk.data.DatasetRecordException;
@@ -47,10 +45,15 @@ import org.kitesdk.data.SchemaNotFoundException;
 import org.kitesdk.data.spi.DefaultConfiguration;
 import org.kitesdk.data.spi.filesystem.JSONFileReader;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import java.util.concurrent.atomic.AtomicLong;
+
 @Tags({"kite", "json", "avro"})
-@CapabilityDescription(
-        "Converts JSON files to Avro according to an Avro Schema")
-public class ConvertJSONToAvro extends AbstractKiteProcessor {
+@InputRequirement(Requirement.INPUT_REQUIRED)
+@CapabilityDescription("Converts JSON files to Avro according to an Avro Schema")
+public class ConvertJSONToAvro extends AbstractKiteConvertProcessor {
 
     private static final Relationship SUCCESS = new Relationship.Builder()
             .name("success")
@@ -81,6 +84,7 @@ public class ConvertJSONToAvro extends AbstractKiteProcessor {
             = ImmutableList.<PropertyDescriptor>builder()
             .addAll(AbstractKiteProcessor.getProperties())
             .add(SCHEMA)
+            .add(COMPRESSION_TYPE)
             .build();
 
     private static final Set<Relationship> RELATIONSHIPS
@@ -125,10 +129,10 @@ public class ConvertJSONToAvro extends AbstractKiteProcessor {
 
         final DataFileWriter<Record> writer = new DataFileWriter<>(
                 AvroUtil.newDatumWriter(schema, Record.class));
-        writer.setCodec(CodecFactory.snappyCodec());
+        writer.setCodec(getCodecFactory(context.getProperty(COMPRESSION_TYPE).getValue()));
 
         try {
-            final LongHolder written = new LongHolder(0L);
+            final AtomicLong written = new AtomicLong(0L);
             final FailureTracker failures = new FailureTracker();
 
             FlowFile badRecords = session.clone(incomingJSON);
@@ -196,6 +200,12 @@ public class ConvertJSONToAvro extends AbstractKiteProcessor {
         } catch (DatasetException e) {
             getLogger().error("Failed to read FlowFile", e);
             session.transfer(incomingJSON, FAILURE);
+        } finally {
+            try {
+                writer.close();
+            } catch (IOException e) {
+                getLogger().warn("Unable to close writer ressource", e);
+            }
         }
     }
 

@@ -15,58 +15,92 @@
  * limitations under the License.
  */
 
-/* global nf */
+/* global define, module, require, exports */
 
-nf.RemoteProcessGroupDetails = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'nf.Common',
+                'nf.CanvasUtils'],
+            function ($, nfCommon, nfCanvasUtils) {
+                return (nf.RemoteProcessGroupDetails = factory($, nfCommon, nfCanvasUtils));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.RemoteProcessGroupDetails =
+            factory(require('jquery'),
+                require('nf.Common'),
+                require('nf.CanvasUtils')));
+    } else {
+        nf.RemoteProcessGroupDetails = factory(root.$,
+            root.nf.Common,
+            root.nf.CanvasUtils);
+    }
+}(this, function ($, nfCommon, nfCanvasUtils) {
+    'use strict';
+
     return {
         init: function () {
             $('#remote-process-group-details').modal({
                 headerText: 'Remote Process Group Details',
-                overlayBackground: true,
+                scrollableContentStyle: 'scrollable',
                 buttons: [{
-                        buttonText: 'Ok',
-                        handler: {
-                            click: function () {
-                                $('#remote-process-group-details').modal('hide');
-                            }
+                    buttonText: 'Ok',
+                    color: {
+                        base: '#728E9B',
+                        hover: '#004849',
+                        text: '#ffffff'
+                    },
+                    handler: {
+                        click: function () {
+                            $('#remote-process-group-details').modal('hide');
                         }
-                    }],
+                    }
+                }],
                 handler: {
                     close: function () {
                         // clear the remote process group details
-                        nf.Common.clearField('read-only-remote-process-group-id');
-                        nf.Common.clearField('read-only-remote-process-group-name');
-                        nf.Common.clearField('read-only-remote-process-group-url');
-                        nf.Common.clearField('read-only-remote-process-group-timeout');
-                        nf.Common.clearField('read-only-remote-process-group-yield-duration');
+                        nfCommon.clearField('read-only-remote-process-group-id');
+                        nfCommon.clearField('read-only-remote-process-group-name');
+                        nfCommon.clearField('read-only-remote-process-group-urls');
+                        nfCommon.clearField('read-only-remote-process-group-timeout');
+                        nfCommon.clearField('read-only-remote-process-group-yield-duration');
+                        nfCommon.clearField('read-only-remote-process-group-transport-protocol');
+                        nfCommon.clearField('read-only-remote-process-group-local-network-interface');
+                        nfCommon.clearField('read-only-remote-process-group-proxy-host');
+                        nfCommon.clearField('read-only-remote-process-group-proxy-port');
+                        nfCommon.clearField('read-only-remote-process-group-proxy-user');
+                        nfCommon.clearField('read-only-remote-process-group-proxy-password');
                     }
                 }
-            }).draggable({
-                containment: 'parent',
-                handle: '.dialog-header'
             });
         },
-        
+
         /**
          * Shows the details for the remote process group in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         showDetails: function (selection) {
             // if the specified component is a remote process group, load its properties
-            if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
+            if (nfCanvasUtils.isRemoteProcessGroup(selection)) {
                 var selectionData = selection.datum();
 
                 // populate the port settings
-                nf.Common.populateField('read-only-remote-process-group-id', selectionData.component.id);
-                nf.Common.populateField('read-only-remote-process-group-name', selectionData.component.name);
-                nf.Common.populateField('read-only-remote-process-group-url', selectionData.component.targetUri);
-                nf.Common.populateField('read-only-remote-process-group-timeout', selectionData.component.communicationsTimeout);
-                nf.Common.populateField('read-only-remote-process-group-yield-duration', selectionData.component.yieldDuration);
+                nfCommon.populateField('read-only-remote-process-group-id', selectionData.id);
+                nfCommon.populateField('read-only-remote-process-group-name', selectionData.component.name);
+                nfCommon.populateField('read-only-remote-process-group-urls', selectionData.component.targetUris);
+                nfCommon.populateField('read-only-remote-process-group-timeout', selectionData.component.communicationsTimeout);
+                nfCommon.populateField('read-only-remote-process-group-yield-duration', selectionData.component.yieldDuration);
+                nfCommon.populateField('read-only-remote-process-group-transport-protocol', selectionData.component.transportProtocol);
+                nfCommon.populateField('read-only-remote-process-group-local-network-interface', selectionData.component.localNetworkInterface);
+                nfCommon.populateField('read-only-remote-process-group-proxy-host', selectionData.component.proxyHost);
+                nfCommon.populateField('read-only-remote-process-group-proxy-port', selectionData.component.proxyPort);
+                nfCommon.populateField('read-only-remote-process-group-proxy-user', selectionData.component.proxyUser);
+                nfCommon.populateField('read-only-remote-process-group-proxy-password', selectionData.component.proxyPassword);
 
                 // show the details
                 $('#remote-process-group-details').modal('show');
             }
         }
     };
-}());
+}));

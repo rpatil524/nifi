@@ -16,10 +16,9 @@
  */
 package org.apache.nifi.attribute.expression.language;
 
-import java.util.Map;
 
+import java.util.Map;
 import org.apache.nifi.expression.AttributeValueDecorator;
-import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.processor.exception.ProcessException;
 
 public class EmptyPreparedQuery implements PreparedQuery {
@@ -31,32 +30,12 @@ public class EmptyPreparedQuery implements PreparedQuery {
     }
 
     @Override
-    public String evaluateExpressions(final FlowFile flowFile, final AttributeValueDecorator decorator) throws ProcessException {
+    public String evaluateExpressions(Map<String, String> valueLookup, AttributeValueDecorator decorator) throws ProcessException {
         return value;
     }
 
     @Override
-    public String evaluateExpressions() throws ProcessException {
-        return value;
-    }
-
-    @Override
-    public String evaluateExpressions(final AttributeValueDecorator decorator) throws ProcessException {
-        return value;
-    }
-
-    @Override
-    public String evaluateExpressions(final FlowFile flowFile) throws ProcessException {
-        return value;
-    }
-
-    @Override
-    public String evaluateExpressions(Map<String, String> attributes) throws ProcessException {
-        return value;
-    }
-
-    @Override
-    public String evaluateExpressions(Map<String, String> attributes, AttributeValueDecorator decorator) throws ProcessException {
+    public String evaluateExpressions(Map<String, String> attributes, AttributeValueDecorator decorator, Map<String, String> stateVariables) throws ProcessException {
         return value;
     }
 }

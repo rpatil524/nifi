@@ -15,59 +15,122 @@
  * limitations under the License.
  */
 
-/* global nf */
+/* global define, module, require, exports */
 
-nf.LabelConfiguration = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'd3',
+                'nf.ErrorHandler',
+                'nf.Common',
+                'nf.Client',
+                'nf.CanvasUtils',
+                'nf.ng.Bridge',
+                'nf.Label'],
+            function ($, d3, nfErrorHandler, nfCommon, nfClient, nfCanvasUtils, nfNgBridge, nfLabel) {
+                return (nf.LabelConfiguration = factory($, d3, nfErrorHandler, nfCommon, nfClient, nfCanvasUtils, nfNgBridge, nfLabel));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.LabelConfiguration =
+            factory(require('jquery'),
+                require('d3'),
+                require('nf.ErrorHandler'),
+                require('nf.Common'),
+                require('nf.Client'),
+                require('nf.CanvasUtils'),
+                require('nf.ng.Bridge'),
+                require('nf.Label')));
+    } else {
+        nf.LabelConfiguration = factory(root.$,
+            root.d3,
+            root.nf.ErrorHandler,
+            root.nf.Common,
+            root.nf.Client,
+            root.nf.CanvasUtils,
+            root.nf.ng.Bridge,
+            root.nf.Label);
+    }
+}(this, function ($, d3, nfErrorHandler, nfCommon, nfClient, nfCanvasUtils, nfNgBridge, nfLabel) {
+    'use strict';
 
-    var labelUri = '';
+    var labelId = '';
 
     return {
         /**
          * Initializes the label details dialog.
          */
         init: function () {
-            var apply = function () {
-                var revision = nf.Client.getRevision();
-
-                // get the new values
-                var labelValue = $('#label-value').val();
-                var fontSize = $('#label-font-size').combo('getSelectedOption');
-
-                // save the new label value
-                $.ajax({
-                    type: 'PUT',
-                    url: labelUri,
-                    data: {
-                        'version': revision.version,
-                        'clientId': revision.clientId,
-                        'label': labelValue,
-                        'style[font-size]': fontSize.value
-                    },
-                    dataType: 'json'
-                }).done(function (response) {
-                    // update the revision
-                    nf.Client.setRevision(response.revision);
-
-                    // get the label out of the response
-                    nf.Label.set(response.label);
-                }).fail(nf.Common.handleAjaxError);
-
-
-                // reset and hide the dialog
-                labelUri = '';
-                $('#label-configuration').hide();
-            };
-
-            var cancel = function () {
-                labelUri = '';
-                $('#label-configuration').hide();
-            };
-
             // make the new property dialog draggable
-            $('#label-configuration').draggable({
-                containment: 'parent',
-                cancel: 'textarea, .button, .combo'
-            }).on('click', '#label-configuration-apply', apply).on('click', '#label-configuration-cancel', cancel);
+            $('#label-configuration').modal({
+                scrollableContentStyle: 'scrollable',
+                headerText: 'Configure Label',
+                buttons: [{
+                    buttonText: 'Apply',
+                    color: {
+                        base: '#728E9B',
+                        hover: '#004849',
+                        text: '#ffffff'
+                    },
+                    handler: {
+                        click: function () {
+                            // get the label data
+                            var labelData = d3.select('#id-' + labelId).datum();
+
+                            // get the new values
+                            var labelValue = $('#label-value').val();
+                            var fontSize = $('#label-font-size').combo('getSelectedOption');
+
+                            // build the label entity
+                            var labelEntity = {
+                                'revision': nfClient.getRevision(labelData),
+                                'component': {
+                                    'id': labelId,
+                                    'label': labelValue,
+                                    'style': {
+                                        'font-size': fontSize.value
+                                    }
+                                }
+                            };
+
+                            // save the new label value
+                            $.ajax({
+                                type: 'PUT',
+                                url: labelData.uri,
+                                data: JSON.stringify(labelEntity),
+                                dataType: 'json',
+                                contentType: 'application/json'
+                            }).done(function (response) {
+                                // get the label out of the response
+                                nfLabel.set(response);
+
+                                // inform Angular app values have changed
+                                nfNgBridge.digest();
+                            }).fail(nfErrorHandler.handleAjaxError);
+
+                            // reset and hide the dialog
+                            this.modal('hide');
+                        }
+                    }
+                },
+                    {
+                        buttonText: 'Cancel',
+                        color: {
+                            base: '#E3E8EB',
+                            hover: '#C7D2D7',
+                            text: '#004849'
+                        },
+                        handler: {
+                            click: function () {
+                                this.modal('hide');
+                            }
+                        }
+                    }],
+                handler: {
+                    close: function () {
+                        labelId = '';
+                    }
+                }
+            });
 
             // create the available sizes
             var sizes = [];
@@ -96,30 +159,30 @@ nf.LabelConfiguration = (function () {
                 }
             });
         },
-        
+
         /**
          * Shows the configuration for the specified label.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         showConfiguration: function (selection) {
-            if (nf.CanvasUtils.isLabel(selection)) {
+            if (nfCanvasUtils.isLabel(selection)) {
                 var selectionData = selection.datum();
 
                 // get the label value
                 var labelValue = '';
-                if (nf.Common.isDefinedAndNotNull(selectionData.component.label)) {
+                if (nfCommon.isDefinedAndNotNull(selectionData.component.label)) {
                     labelValue = selectionData.component.label;
                 }
 
                 // get the font size
                 var fontSize = '12px';
-                if (nf.Common.isDefinedAndNotNull(selectionData.component.style['font-size'])) {
+                if (nfCommon.isDefinedAndNotNull(selectionData.component.style['font-size'])) {
                     fontSize = selectionData.component.style['font-size'];
                 }
 
                 // store the label uri
-                labelUri = selectionData.component.uri;
+                labelId = selectionData.id;
 
                 // populate the dialog
                 $('#label-value').val(labelValue);
@@ -128,8 +191,8 @@ nf.LabelConfiguration = (function () {
                 });
 
                 // show the detail dialog
-                $('#label-configuration').center().show();
+                $('#label-configuration').modal('show');
             }
         }
     };
-}());
+}));

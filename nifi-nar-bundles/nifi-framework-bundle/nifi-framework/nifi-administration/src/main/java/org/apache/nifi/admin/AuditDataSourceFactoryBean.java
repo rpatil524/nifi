@@ -16,17 +16,18 @@
  */
 package org.apache.nifi.admin;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.util.NiFiProperties;
+import org.h2.jdbcx.JdbcConnectionPool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.FactoryBean;
+
 import java.io.File;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import org.apache.commons.lang3.StringUtils;
-import org.h2.jdbcx.JdbcConnectionPool;
-import org.apache.nifi.util.NiFiProperties;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.FactoryBean;
 
 /**
  *
@@ -38,15 +39,14 @@ public class AuditDataSourceFactoryBean implements FactoryBean {
     private static final int MAX_CONNECTIONS = 5;
 
     // database file name
-    private static final String AUDIT_DATABASE_FILE_NAME = "nifi-audit";
+    private static final String AUDIT_DATABASE_FILE_NAME = "nifi-flow-audit";
 
     // ------------
     // action table
     // ------------
     private static final String CREATE_ACTION_TABLE = "CREATE TABLE ACTION ("
             + "ID INT NOT NULL PRIMARY KEY AUTO_INCREMENT, "
-            + "USER_DN VARCHAR2(255) NOT NULL, "
-            + "USER_NAME VARCHAR2(100) NOT NULL, "
+            + "IDENTITY VARCHAR2(4096) NOT NULL, "
             + "SOURCE_ID VARCHAR2(100) NOT NULL, "
             + "SOURCE_NAME VARCHAR2(1000) NOT NULL, "
             + "SOURCE_TYPE VARCHAR2(1000) NOT NULL, "
@@ -148,14 +148,14 @@ public class AuditDataSourceFactoryBean implements FactoryBean {
                 connection = connectionPool.getConnection();
                 connection.setAutoCommit(false);
 
+                // create a statement for initializing the database
+                statement = connection.createStatement();
+
                 // determine if the tables need to be created
                 rs = connection.getMetaData().getTables(null, null, "ACTION", null);
                 if (!rs.next()) {
                     logger.info("Database not built for repository: " + databaseUrl + ".  Building now...");
                     RepositoryUtils.closeQuietly(rs);
-
-                    // create a statement for initializing the database
-                    statement = connection.createStatement();
 
                     // action table
                     statement.execute(CREATE_ACTION_TABLE);
@@ -169,8 +169,6 @@ public class AuditDataSourceFactoryBean implements FactoryBean {
                     statement.execute(CREATE_CONFIGURE_DETAILS_TABLE);
                     statement.execute(CREATE_CONNECT_DETAILS_TABLE);
                     statement.execute(CREATE_PURGE_DETAILS_TABLE);
-                } else {
-                    logger.info("Existing database found and connected to at: " + databaseUrl);
                 }
 
                 // commit any changes

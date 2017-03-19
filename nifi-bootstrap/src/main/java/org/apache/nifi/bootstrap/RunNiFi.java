@@ -28,6 +28,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -41,6 +42,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -51,13 +53,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-
+import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.bootstrap.notification.NotificationType;
+import org.apache.nifi.util.file.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- *
  * <p>
  * The class which bootstraps Apache NiFi. This class looks for the
  * bootstrap.conf file by looking in the following places (in order):</p>
@@ -69,29 +71,35 @@ import org.slf4j.LoggerFactory;
  * <li>./conf/bootstrap.conf, where {@code ./} represents the working
  * directory.</li>
  * </ol>
- *
+ * <p>
  * If the {@code bootstrap.conf} file cannot be found, throws a {@code FileNotFoundException}.
  */
 public class RunNiFi {
 
     public static final String DEFAULT_CONFIG_FILE = "./conf/bootstrap.conf";
-    public static final String DEFAULT_NIFI_PROPS_FILE = "./conf/nifi.properties";
     public static final String DEFAULT_JAVA_CMD = "java";
+    public static final String DEFAULT_PID_DIR = "bin";
+    public static final String DEFAULT_LOG_DIR = "./logs";
 
     public static final String GRACEFUL_SHUTDOWN_PROP = "graceful.shutdown.seconds";
     public static final String DEFAULT_GRACEFUL_SHUTDOWN_VALUE = "20";
 
     public static final String NOTIFICATION_SERVICES_FILE_PROP = "notification.services.file";
-    public static final String DEFAULT_NOTIFICATION_SERVICES_FILE = "./conf/bootstrap-notification-services.xml";
     public static final String NOTIFICATION_ATTEMPTS_PROP = "notification.max.attempts";
 
     public static final String NIFI_START_NOTIFICATION_SERVICE_IDS_PROP = "nifi.start.notification.services";
     public static final String NIFI_STOP_NOTIFICATION_SERVICE_IDS_PROP = "nifi.stop.notification.services";
     public static final String NIFI_DEAD_NOTIFICATION_SERVICE_IDS_PROP = "nifi.dead.notification.services";
 
-    public static final String RUN_AS_PROP = "run.as";
+    public static final String NIFI_PID_DIR_PROP = "org.apache.nifi.bootstrap.config.pid.dir";
 
-    public static final int MAX_RESTART_ATTEMPTS = 5;
+    public static final String NIFI_PID_FILE_NAME = "nifi.pid";
+    public static final String NIFI_STATUS_FILE_NAME = "nifi.status";
+    public static final String NIFI_LOCK_FILE_NAME = "nifi.lock";
+    public static final String NIFI_BOOTSTRAP_SENSITIVE_KEY = "nifi.bootstrap.sensitive.key";
+
+    public static final String PID_KEY = "pid";
+
     public static final int STARTUP_WAIT_SECONDS = 60;
 
     public static final String SHUTDOWN_CMD = "SHUTDOWN";
@@ -186,6 +194,7 @@ public class RunNiFi {
             case "status":
             case "dump":
             case "restart":
+            case "env":
                 break;
             default:
                 printUsage();
@@ -195,6 +204,7 @@ public class RunNiFi {
         final File configFile = getBootstrapConfFile();
         final RunNiFi runNiFi = new RunNiFi(configFile, verbose);
 
+        Integer exitStatus = null;
         switch (cmd.toLowerCase()) {
             case "start":
                 runNiFi.start();
@@ -206,7 +216,7 @@ public class RunNiFi {
                 runNiFi.stop();
                 break;
             case "status":
-                runNiFi.status();
+                exitStatus = runNiFi.status();
                 break;
             case "restart":
                 runNiFi.stop();
@@ -215,6 +225,12 @@ public class RunNiFi {
             case "dump":
                 runNiFi.dump(dumpFile);
                 break;
+            case "env":
+                runNiFi.env();
+                break;
+        }
+        if (exitStatus != null) {
+            System.exit(exitStatus);
         }
     }
 
@@ -318,29 +334,42 @@ public class RunNiFi {
         defaultLogger.info("Registered {} Notification Services for Notification Type {}", registered, type);
     }
 
-    File getStatusFile() {
-        return getStatusFile(defaultLogger);
-    }
 
-    public File getStatusFile(final Logger logger) {
+    private File getBootstrapFile(final Logger logger, String directory, String defaultDirectory, String fileName) throws IOException {
+
         final File confDir = bootstrapConfigFile.getParentFile();
         final File nifiHome = confDir.getParentFile();
-        final File bin = new File(nifiHome, "bin");
-        final File statusFile = new File(bin, "nifi.pid");
 
+        String confFileDir = System.getProperty(directory);
+
+        final File fileDir;
+
+        if (confFileDir != null) {
+            fileDir = new File(confFileDir.trim());
+        } else {
+            fileDir = new File(nifiHome, defaultDirectory);
+        }
+
+        FileUtils.ensureDirectoryExistAndCanAccess(fileDir);
+        final File statusFile = new File(fileDir, fileName);
         logger.debug("Status File: {}", statusFile);
-
         return statusFile;
     }
 
-    public File getLockFile(final Logger logger) {
-        final File confDir = bootstrapConfigFile.getParentFile();
-        final File nifiHome = confDir.getParentFile();
-        final File bin = new File(nifiHome, "bin");
-        final File lockFile = new File(bin, "nifi.lock");
+    File getPidFile(final Logger logger) throws IOException {
+        return getBootstrapFile(logger, NIFI_PID_DIR_PROP, DEFAULT_PID_DIR, NIFI_PID_FILE_NAME);
+    }
 
-        logger.debug("Lock File: {}", lockFile);
-        return lockFile;
+    File getStatusFile(final Logger logger) throws IOException {
+        return getBootstrapFile(logger, NIFI_PID_DIR_PROP, DEFAULT_PID_DIR, NIFI_STATUS_FILE_NAME);
+    }
+
+    File getLockFile(final Logger logger) throws IOException {
+        return getBootstrapFile(logger, NIFI_PID_DIR_PROP, DEFAULT_PID_DIR, NIFI_LOCK_FILE_NAME);
+    }
+
+    File getStatusFile() throws IOException {
+        return getStatusFile(defaultLogger);
     }
 
     private Properties loadProperties(final Logger logger) throws IOException {
@@ -362,7 +391,12 @@ public class RunNiFi {
         return props;
     }
 
-    private synchronized void saveProperties(final Properties nifiProps, final Logger logger) throws IOException {
+    private synchronized void savePidProperties(final Properties pidProperties, final Logger logger) throws IOException {
+        final String pid = pidProperties.getProperty(PID_KEY);
+        if (!StringUtils.isBlank(pid)) {
+            writePidFile(pid, logger);
+        }
+
         final File statusFile = getStatusFile(logger);
         if (statusFile.exists() && !statusFile.delete()) {
             logger.warn("Failed to delete {}", statusFile);
@@ -379,16 +413,47 @@ public class RunNiFi {
             Files.setPosixFilePermissions(statusFile.toPath(), perms);
         } catch (final Exception e) {
             logger.warn("Failed to set permissions so that only the owner can read status file {}; "
-                + "this may allows others to have access to the key needed to communicate with NiFi. "
-                + "Permissions should be changed so that only the owner can read this file", statusFile);
+                    + "this may allows others to have access to the key needed to communicate with NiFi. "
+                    + "Permissions should be changed so that only the owner can read this file", statusFile);
         }
 
         try (final FileOutputStream fos = new FileOutputStream(statusFile)) {
-            nifiProps.store(fos, null);
+            pidProperties.store(fos, null);
             fos.getFD().sync();
         }
 
-        logger.debug("Saved Properties {} to {}", new Object[]{nifiProps, statusFile});
+        logger.debug("Saved Properties {} to {}", new Object[]{pidProperties, statusFile});
+    }
+
+    private synchronized void writePidFile(final String pid, final Logger logger) throws IOException {
+        final File pidFile = getPidFile(logger);
+        if (pidFile.exists() && !pidFile.delete()) {
+            logger.warn("Failed to delete {}", pidFile);
+        }
+
+        if (!pidFile.createNewFile()) {
+            throw new IOException("Failed to create file " + pidFile);
+        }
+
+        try {
+            final Set<PosixFilePermission> perms = new HashSet<>();
+            perms.add(PosixFilePermission.OWNER_WRITE);
+            perms.add(PosixFilePermission.OWNER_READ);
+            perms.add(PosixFilePermission.GROUP_READ);
+            perms.add(PosixFilePermission.OTHERS_READ);
+            Files.setPosixFilePermissions(pidFile.toPath(), perms);
+        } catch (final Exception e) {
+            logger.warn("Failed to set permissions so that only the owner can read pid file {}; "
+                    + "this may allows others to have access to the key needed to communicate with NiFi. "
+                    + "Permissions should be changed so that only the owner can read this file", pidFile);
+        }
+
+        try (final FileOutputStream fos = new FileOutputStream(pidFile)) {
+            fos.write(pid.getBytes(StandardCharsets.UTF_8));
+            fos.getFD().sync();
+        }
+
+        logger.debug("Saved Pid {} to {}", new Object[]{pid, pidFile});
     }
 
     private boolean isPingSuccessful(final int port, final String secretKey, final Logger logger) {
@@ -431,7 +496,7 @@ public class RunNiFi {
             return port;
         }
 
-        final String pid = props.getProperty("pid");
+        final String pid = props.getProperty(PID_KEY);
         logger.debug("PID in status file is {}", pid);
         if (pid != null) {
             final boolean procRunning = isProcessRunning(pid, logger);
@@ -457,8 +522,8 @@ public class RunNiFi {
             boolean running = false;
             String line;
             try (final InputStream in = proc.getInputStream();
-                final Reader streamReader = new InputStreamReader(in);
-                final BufferedReader reader = new BufferedReader(streamReader)) {
+                 final Reader streamReader = new InputStreamReader(in);
+                 final BufferedReader reader = new BufferedReader(streamReader)) {
 
                 while ((line = reader.readLine()) != null) {
                     if (line.trim().startsWith(pid)) {
@@ -494,7 +559,7 @@ public class RunNiFi {
         }
 
         final String portValue = props.getProperty("port");
-        final String pid = props.getProperty("pid");
+        final String pid = props.getProperty(PID_KEY);
         final String secretKey = props.getProperty("secret.key");
 
         if (portValue == null && pid == null) {
@@ -516,33 +581,85 @@ public class RunNiFi {
             return new Status(port, pid, true, true);
         }
 
-        final boolean alive = (pid == null) ? false : isProcessRunning(pid, logger);
+        final boolean alive = pid != null && isProcessRunning(pid, logger);
         return new Status(port, pid, pingSuccess, alive);
     }
 
-    public void status() throws IOException {
+    public int status() throws IOException {
         final Logger logger = cmdLogger;
         final Status status = getStatus(logger);
         if (status.isRespondingToPing()) {
             logger.info("Apache NiFi is currently running, listening to Bootstrap on port {}, PID={}",
-                new Object[]{status.getPort(), status.getPid() == null ? "unknkown" : status.getPid()});
-            return;
+                    new Object[]{status.getPort(), status.getPid() == null ? "unknown" : status.getPid()});
+            return 0;
         }
 
         if (status.isProcessRunning()) {
             logger.info("Apache NiFi is running at PID {} but is not responding to ping requests", status.getPid());
-            return;
+            return 4;
         }
 
         if (status.getPort() == null) {
             logger.info("Apache NiFi is not running");
-            return;
+            return 3;
         }
 
         if (status.getPid() == null) {
             logger.info("Apache NiFi is not responding to Ping requests. The process may have died or may be hung");
         } else {
             logger.info("Apache NiFi is not running");
+        }
+        return 3;
+    }
+
+    public void env() {
+        final Logger logger = cmdLogger;
+        final Status status = getStatus(logger);
+        if (status.getPid() == null) {
+            logger.info("Apache NiFi is not running");
+            return;
+        }
+        final Class<?> virtualMachineClass;
+        try {
+            virtualMachineClass = Class.forName("com.sun.tools.attach.VirtualMachine");
+        } catch (final ClassNotFoundException cnfe) {
+            logger.error("Seems tools.jar (Linux / Windows JDK) or classes.jar (Mac OS) is not available in classpath");
+            return;
+        }
+        final Method attachMethod;
+        final Method detachMethod;
+
+        try {
+            attachMethod = virtualMachineClass.getMethod("attach", String.class);
+            detachMethod = virtualMachineClass.getDeclaredMethod("detach");
+        } catch (final Exception e) {
+            logger.error("Methods required for getting environment not available", e);
+            return;
+        }
+
+        final Object virtualMachine;
+        try {
+            virtualMachine = attachMethod.invoke(null, status.getPid());
+        } catch (final Throwable t) {
+            logger.error("Problem attaching to NiFi", t);
+            return;
+        }
+
+        try {
+            final Method getSystemPropertiesMethod = virtualMachine.getClass().getMethod("getSystemProperties");
+
+            final Properties sysProps = (Properties) getSystemPropertiesMethod.invoke(virtualMachine);
+            for (Entry<Object, Object> syspropEntry : sysProps.entrySet()) {
+                logger.info(syspropEntry.getKey().toString() + " = " + syspropEntry.getValue().toString());
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        } finally {
+            try {
+                detachMethod.invoke(virtualMachine);
+            } catch (final Exception e) {
+                logger.warn("Caught exception detaching from process", e);
+            }
         }
     }
 
@@ -608,7 +725,7 @@ public class RunNiFi {
         }
 
         serviceManager.notify(NotificationType.NIFI_STOPPED, "NiFi Stopped on Host " + hostname,
-            "Hello,\n\nApache NiFi has been told to initiate a shutdown on host " + hostname + " at " + now + " by user " + user);
+                "Hello,\n\nApache NiFi has been told to initiate a shutdown on host " + hostname + " at " + now + " by user " + user);
     }
 
     public void stop() throws IOException {
@@ -627,13 +744,16 @@ public class RunNiFi {
 
         final Properties nifiProps = loadProperties(logger);
         final String secretKey = nifiProps.getProperty("secret.key");
+        final String pid = nifiProps.getProperty(PID_KEY);
+        final File statusFile = getStatusFile(logger);
+        final File pidFile = getPidFile(logger);
 
         try (final Socket socket = new Socket()) {
             logger.debug("Connecting to NiFi instance");
-            socket.setSoTimeout(60000);
+            socket.setSoTimeout(10000);
             socket.connect(new InetSocketAddress("localhost", port));
             logger.debug("Established connection to NiFi instance.");
-            socket.setSoTimeout(60000);
+            socket.setSoTimeout(10000);
 
             logger.debug("Sending SHUTDOWN Command to port {}", port);
             final OutputStream out = socket.getOutputStream();
@@ -654,7 +774,6 @@ public class RunNiFi {
             if (SHUTDOWN_CMD.equals(response)) {
                 logger.info("Apache NiFi has accepted the Shutdown Command and is shutting down now");
 
-                final String pid = nifiProps.getProperty("pid");
                 if (pid != null) {
                     final Properties bootstrapProperties = new Properties();
                     try (final FileInputStream fis = new FileInputStream(bootstrapConfigFile)) {
@@ -693,17 +812,31 @@ public class RunNiFi {
                         }
                     }
 
-                    final File statusFile = getStatusFile(logger);
                     if (statusFile.exists() && !statusFile.delete()) {
                         logger.error("Failed to delete status file {}; this file should be cleaned up manually", statusFile);
                     }
+
+                    if (pidFile.exists() && !pidFile.delete()) {
+                        logger.error("Failed to delete pid file {}; this file should be cleaned up manually", pidFile);
+                    }
+
                     logger.info("NiFi has finished shutting down.");
                 }
             } else {
                 logger.error("When sending SHUTDOWN command to NiFi, got unexpected response {}", response);
             }
         } catch (final IOException ioe) {
-            logger.error("Failed to send shutdown command to port {} due to {}", new Object[]{port, ioe.toString(), ioe});
+            if (pid == null) {
+                logger.error("Failed to send shutdown command to port {} due to {}. No PID found for the NiFi process, so unable to kill process; "
+                        + "the process should be killed manually.", new Object[]{port, ioe.toString()});
+            } else {
+                logger.error("Failed to send shutdown command to port {} due to {}. Will kill the NiFi Process with PID {}.", port, ioe.toString(), pid);
+                notifyStop();
+                killProcessTree(pid, logger);
+                if (statusFile.exists() && !statusFile.delete()) {
+                    logger.error("Failed to delete status file {}; this file should be cleaned up manually", statusFile);
+                }
+            }
         } finally {
             if (lockFile.exists() && !lockFile.delete()) {
                 logger.error("Failed to delete lock file {}; this file should be cleaned up manually", lockFile);
@@ -715,7 +848,7 @@ public class RunNiFi {
         final Process proc = Runtime.getRuntime().exec(new String[]{"ps", "-o", "pid", "--no-headers", "--ppid", ppid});
         final List<String> childPids = new ArrayList<>();
         try (final InputStream in = proc.getInputStream();
-            final BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+             final BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
 
             String line;
             while ((line = reader.readLine()) != null) {
@@ -771,7 +904,7 @@ public class RunNiFi {
         }
 
         final File prevLockFile = getLockFile(cmdLogger);
-        if (prevLockFile.exists() && !prevLockFile.delete()){
+        if (prevLockFile.exists() && !prevLockFile.delete()) {
             cmdLogger.warn("Failed to delete previous lock file {}; this file should be cleaned up manually", prevLockFile);
         }
 
@@ -801,6 +934,8 @@ public class RunNiFi {
         if (specifiedWorkingDir == null) {
             builder.directory(workingDir);
         }
+
+        final String nifiLogDir = replaceNull(System.getProperty("org.apache.nifi.bootstrap.config.log.dir"), DEFAULT_LOG_DIR).trim();
 
         final String libFilename = replaceNull(props.get("lib.dir"), "./lib").trim();
         File libDir = getFile(libFilename, workingDir);
@@ -870,7 +1005,7 @@ public class RunNiFi {
             if (javaHome != null) {
                 String fileExtension = isWindows() ? ".exe" : "";
                 File javaFile = new File(javaHome + File.separatorChar + "bin"
-                    + File.separatorChar + "java" + fileExtension);
+                        + File.separatorChar + "java" + fileExtension);
                 if (javaFile.exists() && javaFile.canExecute()) {
                     javaCmd = javaFile.getAbsolutePath();
                 }
@@ -889,13 +1024,22 @@ public class RunNiFi {
         cmd.add("-Dnifi.properties.file.path=" + nifiPropsFilename);
         cmd.add("-Dnifi.bootstrap.listen.port=" + listenPort);
         cmd.add("-Dapp=NiFi");
+        cmd.add("-Dorg.apache.nifi.bootstrap.config.log.dir=" + nifiLogDir);
         cmd.add("org.apache.nifi.NiFi");
+        if (props.containsKey(NIFI_BOOTSTRAP_SENSITIVE_KEY) && !StringUtils.isBlank(props.get(NIFI_BOOTSTRAP_SENSITIVE_KEY))) {
+            cmd.add("-k " + props.get(NIFI_BOOTSTRAP_SENSITIVE_KEY));
+        }
 
         builder.command(cmd);
 
         final StringBuilder cmdBuilder = new StringBuilder();
         for (final String s : cmd) {
-            cmdBuilder.append(s).append(" ");
+            // Mask the key
+            if (s.startsWith("-k ")) {
+                cmdBuilder.append("-k ****");
+            } else {
+                cmdBuilder.append(s).append(" ");
+            }
         }
 
         cmdLogger.info("Starting Apache NiFi...");
@@ -912,22 +1056,25 @@ public class RunNiFi {
             gracefulShutdownSeconds = Integer.parseInt(gracefulShutdown);
         } catch (final NumberFormatException nfe) {
             throw new NumberFormatException("The '" + GRACEFUL_SHUTDOWN_PROP + "' property in Bootstrap Config File "
-                + bootstrapConfigAbsoluteFile.getAbsolutePath() + " has an invalid value. Must be a non-negative integer");
+                    + bootstrapConfigAbsoluteFile.getAbsolutePath() + " has an invalid value. Must be a non-negative integer");
         }
 
         if (gracefulShutdownSeconds < 0) {
             throw new NumberFormatException("The '" + GRACEFUL_SHUTDOWN_PROP + "' property in Bootstrap Config File "
-                + bootstrapConfigAbsoluteFile.getAbsolutePath() + " has an invalid value. Must be a non-negative integer");
+                    + bootstrapConfigAbsoluteFile.getAbsolutePath() + " has an invalid value. Must be a non-negative integer");
         }
 
         Process process = builder.start();
         handleLogging(process);
         Long pid = getPid(process, cmdLogger);
-        if (pid != null) {
+        if (pid == null) {
+            cmdLogger.info("Launched Apache NiFi but could not determined the Process ID");
+        } else {
             nifiPid = pid;
-            final Properties nifiProps = new Properties();
-            nifiProps.setProperty("pid", String.valueOf(nifiPid));
-            saveProperties(nifiProps, cmdLogger);
+            final Properties pidProperties = new Properties();
+            pidProperties.setProperty(PID_KEY, String.valueOf(nifiPid));
+            savePidProperties(pidProperties, cmdLogger);
+            cmdLogger.info("Launched Apache NiFi with Process ID " + pid);
         }
 
         shutdownHook = new ShutdownHook(process, this, secretKey, gracefulShutdownSeconds, loggingExecutor);
@@ -966,7 +1113,7 @@ public class RunNiFi {
                         return;
                     }
 
-                    final File  lockFile = getLockFile(defaultLogger);
+                    final File lockFile = getLockFile(defaultLogger);
                     if (lockFile.exists()) {
                         defaultLogger.info("A shutdown was initiated. Will not restart NiFi");
                         return;
@@ -985,11 +1132,14 @@ public class RunNiFi {
                     handleLogging(process);
 
                     pid = getPid(process, defaultLogger);
-                    if (pid != null) {
+                    if (pid == null) {
+                        cmdLogger.info("Launched Apache NiFi but could not obtain the Process ID");
+                    } else {
                         nifiPid = pid;
-                        final Properties nifiProps = new Properties();
-                        nifiProps.setProperty("pid", String.valueOf(nifiPid));
-                        saveProperties(nifiProps, defaultLogger);
+                        final Properties pidProperties = new Properties();
+                        pidProperties.setProperty(PID_KEY, String.valueOf(nifiPid));
+                        savePidProperties(pidProperties, defaultLogger);
+                        cmdLogger.info("Launched Apache NiFi with Process ID " + pid);
                     }
 
                     shutdownHook = new ShutdownHook(process, this, secretKey, gracefulShutdownSeconds, loggingExecutor);
@@ -1002,14 +1152,14 @@ public class RunNiFi {
                         // We are expected to restart nifi, so send a notification that it died. If we are not restarting nifi,
                         // then this means that we are intentionally stopping the service.
                         serviceManager.notify(NotificationType.NIFI_DIED, "NiFi Died on Host " + hostname,
-                            "Hello,\n\nIt appears that Apache NiFi has died on host " + hostname + " at " + now + "; automatically restarting NiFi");
+                                "Hello,\n\nIt appears that Apache NiFi has died on host " + hostname + " at " + now + "; automatically restarting NiFi");
                     } else {
                         defaultLogger.error("Apache NiFi does not appear to have started");
                         // We are expected to restart nifi, so send a notification that it died. If we are not restarting nifi,
                         // then this means that we are intentionally stopping the service.
                         serviceManager.notify(NotificationType.NIFI_DIED, "NiFi Died on Host " + hostname,
-                            "Hello,\n\nIt appears that Apache NiFi has died on host " + hostname + " at " + now +
-                                ". Attempted to restart NiFi but the services does not appear to have restarted!");
+                                "Hello,\n\nIt appears that Apache NiFi has died on host " + hostname + " at " + now +
+                                        ". Attempted to restart NiFi but the services does not appear to have restarted!");
                     }
                 } else {
                     return;
@@ -1129,7 +1279,7 @@ public class RunNiFi {
         this.autoRestartNiFi = restart;
     }
 
-    void setNiFiCommandControlPort(final int port, final String secretKey) {
+    void setNiFiCommandControlPort(final int port, final String secretKey) throws IOException {
         this.ccPort = port;
         this.secretKey = secretKey;
 
@@ -1141,13 +1291,13 @@ public class RunNiFi {
 
         final Properties nifiProps = new Properties();
         if (nifiPid != -1) {
-            nifiProps.setProperty("pid", String.valueOf(nifiPid));
+            nifiProps.setProperty(PID_KEY, String.valueOf(nifiPid));
         }
         nifiProps.setProperty("port", String.valueOf(ccPort));
         nifiProps.setProperty("secret.key", secretKey);
 
         try {
-            saveProperties(nifiProps, defaultLogger);
+            savePidProperties(nifiProps, defaultLogger);
         } catch (final IOException ioe) {
             defaultLogger.warn("Apache NiFi has started but failed to persist NiFi Port information to {} due to {}", new Object[]{statusFile.getAbsolutePath(), ioe});
         }

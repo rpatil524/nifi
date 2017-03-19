@@ -15,22 +15,24 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="cluster-connection-summary-dialog">
+<div id="cluster-connection-summary-dialog" class="hidden large-dialog">
     <div class="dialog-content">
         <div id="cluster-connection-summary-header">
-            <div id="cluster-connection-refresh-button" class="summary-refresh pointer" title="Refresh"></div>
-            <div id="cluster-connection-summary-last-refreshed-container">
-                Last updated:&nbsp;<span id="cluster-connection-summary-last-refreshed"></span>
-            </div>
-            <div id="cluster-connection-summary-loading-container" class="loading-container"></div>
             <div id="cluster-connection-details-container">
                 <div id="cluster-connection-icon"></div>
                 <div id="cluster-connection-details">
                     <div id="cluster-connection-name"></div>
-                    <div id="cluster-connection-id"></div>
+                    <div id="cluster-connection-type"></div>
+                    <div id="cluster-connection-group-id" class="hidden"></div>
                 </div>
+                <div id="cluster-connection-id"></div>
             </div>
         </div>
         <div id="cluster-connection-summary-table"></div>
     </div>
+    <button id="cluster-connection-refresh-button" class="refresh-button pointer fa fa-refresh" title="Refresh"></button>
+    <div id="cluster-connection-summary-last-refreshed-container" class="last-refreshed-container">
+        Last updated:&nbsp;<span id="cluster-connection-summary-last-refreshed" class="value-color"></span>
+    </div>
+    <div id="cluster-connection-summary-loading-container" class="loading-container"></div>
 </div>

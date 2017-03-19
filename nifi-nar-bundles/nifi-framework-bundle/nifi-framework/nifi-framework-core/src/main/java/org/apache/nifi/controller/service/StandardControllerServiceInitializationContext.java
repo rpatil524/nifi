@@ -16,23 +16,33 @@
  */
 package org.apache.nifi.controller.service;
 
+import java.io.File;
 import java.util.Set;
 
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ControllerServiceInitializationContext;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.util.NiFiProperties;
 
 public class StandardControllerServiceInitializationContext implements ControllerServiceInitializationContext, ControllerServiceLookup {
 
     private final String id;
     private final ControllerServiceProvider serviceProvider;
     private final ComponentLog logger;
+    private final StateManager stateManager;
+    private final NiFiProperties nifiProperties;
 
-    public StandardControllerServiceInitializationContext(final String identifier, final ComponentLog logger, final ControllerServiceProvider serviceProvider) {
+    public StandardControllerServiceInitializationContext(
+            final String identifier, final ComponentLog logger,
+            final ControllerServiceProvider serviceProvider, final StateManager stateManager,
+            final NiFiProperties nifiProperties) {
         this.id = identifier;
         this.logger = logger;
         this.serviceProvider = serviceProvider;
+        this.stateManager = stateManager;
+        this.nifiProperties = nifiProperties;
     }
 
     @Override
@@ -66,7 +76,7 @@ public class StandardControllerServiceInitializationContext implements Controlle
     }
 
     @Override
-    public boolean isControllerServiceEnabling(String serviceIdentifier) {
+    public boolean isControllerServiceEnabling(final String serviceIdentifier) {
         return serviceProvider.isControllerServiceEnabling(serviceIdentifier);
     }
 
@@ -78,5 +88,25 @@ public class StandardControllerServiceInitializationContext implements Controlle
     @Override
     public ComponentLog getLogger() {
         return logger;
+    }
+
+    @Override
+    public StateManager getStateManager() {
+        return stateManager;
+    }
+
+    @Override
+    public String getKerberosServicePrincipal() {
+        return nifiProperties.getKerberosServicePrincipal();
+    }
+
+    @Override
+    public File getKerberosServiceKeytab() {
+        return nifiProperties.getKerberosServiceKeytabLocation() == null ? null : new File(nifiProperties.getKerberosServiceKeytabLocation());
+    }
+
+    @Override
+    public File getKerberosConfigurationFile() {
+        return nifiProperties.getKerberosConfigurationFile();
     }
 }

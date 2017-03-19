@@ -19,11 +19,13 @@ package org.apache.nifi.processor;
 import java.util.Collections;
 import java.util.Set;
 
+import org.apache.nifi.annotation.lifecycle.OnConfigurationRestored;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
 import org.apache.nifi.components.AbstractConfigurableComponent;
 import org.apache.nifi.controller.ControllerServiceLookup;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.controller.NodeTypeProvider;
+import org.apache.nifi.logging.ComponentLog;
 
 /**
  * <p>
@@ -45,9 +47,11 @@ import org.apache.nifi.logging.ProcessorLog;
 public abstract class AbstractSessionFactoryProcessor extends AbstractConfigurableComponent implements Processor {
 
     private String identifier;
-    private ProcessorLog logger;
+    private ComponentLog logger;
     private volatile boolean scheduled = false;
+    private volatile boolean configurationRestored = false;
     private ControllerServiceLookup serviceLookup;
+    private NodeTypeProvider nodeTypeProvider;
     private String description;
 
     @Override
@@ -55,6 +59,7 @@ public abstract class AbstractSessionFactoryProcessor extends AbstractConfigurab
         identifier = context.getIdentifier();
         logger = context.getLogger();
         serviceLookup = context.getControllerServiceLookup();
+        nodeTypeProvider = context.getNodeTypeProvider();
         init(context);
 
         description = getClass().getSimpleName() + "[id=" + identifier + "]";
@@ -68,12 +73,20 @@ public abstract class AbstractSessionFactoryProcessor extends AbstractConfigurab
         return serviceLookup;
     }
 
+    /**
+     * @return the {@link NodeTypeProvider} that was passed to the
+     * {@link #init(ProcessorInitializationContext)} method
+     */
+    protected final NodeTypeProvider getNodeTypeProvider() {
+        return nodeTypeProvider;
+    }
+
     @Override
     public Set<Relationship> getRelationships() {
         return Collections.emptySet();
     }
 
-    protected final ProcessorLog getLogger() {
+    protected final ComponentLog getLogger() {
         return logger;
     }
 
@@ -102,6 +115,22 @@ public abstract class AbstractSessionFactoryProcessor extends AbstractConfigurab
     @OnUnscheduled
     public final void updateScheduledFalse() {
         scheduled = false;
+    }
+
+    @OnConfigurationRestored
+    public final void updateConfiguredRestoredTrue() {
+        configurationRestored = true;
+    }
+
+    /**
+     * Returns a boolean indicating whether or not the configuration of the Processor has already been restored.
+     * See the {@link OnConfigurationRestored} annotation for more information about what it means for the configuration
+     * to be restored.
+     *
+     * @return <code>true</code> if configuration has been restored, <code>false</code> otherwise.
+     */
+    protected boolean isConfigurationRestored() {
+        return configurationRestored;
     }
 
     @Override

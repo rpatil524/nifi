@@ -16,11 +16,11 @@
  */
 package org.apache.nifi.admin.service.action;
 
-import java.util.Date;
 import org.apache.nifi.action.Action;
 import org.apache.nifi.admin.dao.ActionDAO;
 import org.apache.nifi.admin.dao.DAOFactory;
-import org.apache.nifi.authorization.AuthorityProvider;
+
+import java.util.Date;
 
 /**
  * Purges actions up to a specified end date.
@@ -36,7 +36,7 @@ public class PurgeActionsAction implements AdministrationAction<Void> {
     }
 
     @Override
-    public Void execute(DAOFactory daoFactory, AuthorityProvider authorityProvider) {
+    public Void execute(DAOFactory daoFactory) {
         ActionDAO actionDao = daoFactory.getActionDAO();
 
         // remove the corresponding actions

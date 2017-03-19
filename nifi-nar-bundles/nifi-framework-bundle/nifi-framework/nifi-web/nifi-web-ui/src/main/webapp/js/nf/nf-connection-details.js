@@ -15,13 +15,31 @@
  * limitations under the License.
  */
 
-/* global nf */
+/* global define, module, require, exports */
 
-nf.ConnectionDetails = (function () {
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery',
+                'nf.Common',
+                'nf.ErrorHandler'],
+            function ($, nfCommon, nfErrorHandler) {
+                return (nf.ConnectionDetails = factory($, nfCommon, nfErrorHandler));
+            });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.ConnectionDetails = factory(require('jquery'),
+            require('nf.Common'),
+            require('nf.ErrorHandler')));
+    } else {
+        nf.ConnectionDetails = factory(root.$,
+            root.nf.Common,
+            root.nf.ErrorHandler);
+    }
+}(this, function ($, nfCommon, nfErrorHandler) {
+    'use strict';
 
     /**
      * Initialize the details for the source of the connection.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} source        The source of the connection
@@ -40,31 +58,49 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Initialize the details for the source processor.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} source            The source of the connection
      */
     var initializeSourceProcessor = function (groupId, groupName, source) {
-        return $.ajax({
-            type: 'GET',
-            url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId) + '/processors/' + encodeURIComponent(source.id),
-            dataType: 'json'
-        }).done(function (response) {
-            var processor = response.processor;
-            var processorName = $('<div class="label"></div>').text(processor.name);
-            var processorType = $('<div></div>').text(nf.Common.substringAfterLast(processor.type, '.'));
+        return $.Deferred(function (deferred) {
+            $.ajax({
+                type: 'GET',
+                url: '../nifi-api/processors/' + encodeURIComponent(source.id),
+                dataType: 'json'
+            }).done(function (response) {
+                var processor = response.component;
+                var processorName = $('<div class="label"></div>').text(processor.name).addClass('ellipsis').attr('title', processor.name);
+                var processorType = $('<div></div>').text(nfCommon.substringAfterLast(processor.type, '.')).addClass('ellipsis').attr('title', nfCommon.substringAfterLast(processor.type, '.'));
 
-            // populate source processor details
-            $('#read-only-connection-source-label').text('From processor');
-            $('#read-only-connection-source').append(processorName).append(processorType);
-            $('#read-only-connection-source-group-name').text(groupName);
-        });
+                // populate source processor details
+                $('#read-only-connection-source-label').text('From processor');
+                $('#read-only-connection-source').append(processorName).append(processorType);
+                $('#read-only-connection-source-group-name').text(groupName);
+
+                deferred.resolve();
+            }).fail(function (xhr, status, error) {
+                if (xhr.status === 403) {
+                    var processorName = $('<div class="label"></div>').text(source.name).addClass('ellipsis').attr('title', source.name);
+                    var processorType = $('<div></div>').text('Processor').addClass('ellipsis').attr('title', 'Processor');
+
+                    // populate source processor details
+                    $('#read-only-connection-source-label').text('From processor');
+                    $('#read-only-connection-source').append(processorName).append(processorType);
+                    $('#read-only-connection-source-group-name').text(groupName);
+
+                    deferred.resolve();
+                } else {
+                    deferred.reject(xhr, status, error);
+                }
+            });
+        }).promise();
     };
 
     /**
      * Initialize the details for the source funnel.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} source            The source of the connection
@@ -72,7 +108,7 @@ nf.ConnectionDetails = (function () {
     var initializeSourceFunnel = function (groupId, groupName, source) {
         return $.Deferred(function (deferred) {
             $('#read-only-connection-source-label').text('From funnel');
-            $('#read-only-connection-source').append('funnel');
+            $('#read-only-connection-source').text('funnel').attr('title', 'funnel');
             $('#read-only-connection-source-group-name').text(groupName);
             deferred.resolve();
         }).promise();
@@ -80,32 +116,44 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Initialize the details for the remote source port.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} source            The source of the connection
      */
     var initializeRemoteSourcePort = function (groupId, groupName, source) {
-        return $.ajax({
-            type: 'GET',
-            url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId) + '/remote-process-groups/' + encodeURIComponent(source.groupId),
-            data: {
-                verbose: true
-            },
-            dataType: 'json'
-        }).done(function (response) {
-            var remoteProcessGroup = response.remoteProcessGroup;
+        return $.Deferred(function (deferred) {
+            $.ajax({
+                type: 'GET',
+                url: '../nifi-api/remote-process-groups/' + encodeURIComponent(source.groupId),
+                dataType: 'json'
+            }).done(function (response) {
+                var remoteProcessGroup = response.component;
 
-            // populate source port details
-            $('#read-only-connection-source-label').text('From output');
-            $('#read-only-connection-source').text(source.name);
-            $('#read-only-connection-source-group-name').text(remoteProcessGroup.name);
-        });
+                // populate source port details
+                $('#read-only-connection-source-label').text('From output');
+                $('#read-only-connection-source').text(source.name).attr('title', source.name);
+                $('#read-only-connection-source-group-name').text(remoteProcessGroup.name);
+
+                deferred.resolve();
+            }).fail(function (xhr, status, error) {
+                if (xhr.status === 403) {
+                    // populate source processor details
+                    $('#read-only-connection-source-label').text('From output');
+                    $('#read-only-connection-source').text(source.name).attr('title', source.name);
+                    $('#read-only-connection-source-group-name').text(source.groupId);
+
+                    deferred.resolve();
+                } else {
+                    deferred.reject(xhr, status, error);
+                }
+            });
+        }).promise();
     };
 
     /**
      * Initialize the details for the source port.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} source            The source of the connection
@@ -115,29 +163,35 @@ nf.ConnectionDetails = (function () {
             if (groupId === source.groupId) {
                 // populate source port details
                 $('#read-only-connection-source-label').text('From input');
-                $('#read-only-connection-source').text(source.name);
+                $('#read-only-connection-source').text(source.name).attr('title', source.name);
                 $('#read-only-connection-source-group-name').text(groupName);
 
                 deferred.resolve();
             } else {
                 $.ajax({
                     type: 'GET',
-                    url: '../nifi-api/controller/process-groups/' + encodeURIComponent(source.groupId),
-                    data: {
-                        verbose: true
-                    },
+                    url: '../nifi-api/process-groups/' + encodeURIComponent(source.groupId),
                     dataType: 'json'
                 }).done(function (response) {
-                    var processGroup = response.processGroup;
+                    var processGroup = response.component;
 
                     // populate source port details
                     $('#read-only-connection-source-label').text('From output');
-                    $('#read-only-connection-source').text(source.name);
+                    $('#read-only-connection-source').text(source.name).attr('title', source.name);
                     $('#read-only-connection-source-group-name').text(processGroup.name);
 
                     deferred.resolve();
-                }).fail(function () {
-                    deferred.reject();
+                }).fail(function (xhr, status, error) {
+                    if (xhr.status === 403) {
+                        // populate source processor details
+                        $('#read-only-connection-source-label').text('From output');
+                        $('#read-only-connection-source').text(source.name).attr('title', source.name);
+                        $('#read-only-connection-source-group-name').text(source.groupId);
+
+                        deferred.resolve();
+                    } else {
+                        deferred.reject(xhr, status, error);
+                    }
                 });
             }
         }).promise();
@@ -145,7 +199,7 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Initialize the details for the destination of the connection.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} destination            The destination of the connection
@@ -164,7 +218,7 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Initialize the details for the destination processor.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} destination            The destination of the connection
@@ -173,12 +227,12 @@ nf.ConnectionDetails = (function () {
         return $.Deferred(function (deferred) {
             $.ajax({
                 type: 'GET',
-                url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId) + '/processors/' + encodeURIComponent(destination.id),
+                url: '../nifi-api/processors/' + encodeURIComponent(destination.id),
                 dataType: 'json'
             }).done(function (response) {
-                var processor = response.processor;
-                var processorName = $('<div class="label"></div>').text(processor.name);
-                var processorType = $('<div></div>').text(nf.Common.substringAfterLast(processor.type, '.'));
+                var processor = response.component;
+                var processorName = $('<div class="label"></div>').text(processor.name).addClass('ellipsis').attr('title', processor.name);
+                var processorType = $('<div></div>').text(nfCommon.substringAfterLast(processor.type, '.')).addClass('ellipsis').attr('title', nfCommon.substringAfterLast(processor.type, '.'));
 
                 // populate destination processor details
                 $('#read-only-connection-target-label').text('To processor');
@@ -186,15 +240,27 @@ nf.ConnectionDetails = (function () {
                 $('#read-only-connection-target-group-name').text(groupName);
 
                 deferred.resolve();
-            }).fail(function () {
-                deferred.reject();
+            }).fail(function (xhr, status, error) {
+                if (xhr.status === 403) {
+                    var processorName = $('<div class="label"></div>').text(destination.name).addClass('ellipsis').attr('title', destination.name);
+                    var processorType = $('<div></div>').text('Processor').addClass('ellipsis').attr('title', 'Processor');
+
+                    // populate destination processor details
+                    $('#read-only-connection-target-label').text('To processor');
+                    $('#read-only-connection-target').append(processorName).append(processorType);
+                    $('#read-only-connection-target-group-name').text(groupName);
+
+                    deferred.resolve();
+                } else {
+                    deferred.reject(xhr, status, error);
+                }
             });
         }).promise();
     };
 
     /**
      * Initialize the details for the source funnel.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} destination            The destination of the connection
@@ -202,7 +268,7 @@ nf.ConnectionDetails = (function () {
     var initializeDestinationFunnel = function (groupId, groupName, destination) {
         return $.Deferred(function (deferred) {
             $('#read-only-connection-target-label').text('To funnel');
-            $('#read-only-connection-target').append('funnel');
+            $('#read-only-connection-target').text('funnel').attr('title', 'funnel');
             $('#read-only-connection-target-group-name').text(groupName);
             deferred.resolve();
         }).promise();
@@ -210,32 +276,44 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Initialize the details for the remote source port.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} destination            The destination of the connection
      */
     var initializeDestinationRemotePort = function (groupId, groupName, destination) {
-        return $.ajax({
-            type: 'GET',
-            url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId) + '/remote-process-groups/' + encodeURIComponent(destination.groupId),
-            data: {
-                verbose: true
-            },
-            dataType: 'json'
-        }).done(function (response) {
-            var remoteProcessGroup = response.remoteProcessGroup;
+        return $.Deferred(function (deferred) {
+            $.ajax({
+                type: 'GET',
+                url: '../nifi-api/remote-process-groups/' + encodeURIComponent(destination.groupId),
+                dataType: 'json'
+            }).done(function (response) {
+                var remoteProcessGroup = response.component;
 
-            // populate source port details
-            $('#read-only-connection-target-label').text('To input');
-            $('#read-only-connection-target').text(destination.name);
-            $('#read-only-connection-target-group-name').text(remoteProcessGroup.name);
-        });
+                // populate source port details
+                $('#read-only-connection-target-label').text('To input');
+                $('#read-only-connection-target').text(destination.name).attr('title', destination.name);
+                $('#read-only-connection-target-group-name').text(remoteProcessGroup.name);
+
+                deferred.resolve();
+            }).fail(function (xhr, status, error) {
+                if (xhr.status === 403) {
+                    // populate source port details
+                    $('#read-only-connection-target-label').text('To input');
+                    $('#read-only-connection-target').text(destination.name).attr('title', destination.name);
+                    $('#read-only-connection-target-group-name').text(destination.groupId);
+
+                    deferred.resolve();
+                } else {
+                    deferred.reject(xhr, status, error);
+                }
+            });
+        }).promise();
     };
 
     /**
      * Initialize the details for the destination port.
-     * 
+     *
      * @argument {string} groupId               The id of the current group
      * @argument {string} groupName             The name of the current group
      * @argument {object} destination            The destination of the connection
@@ -245,29 +323,35 @@ nf.ConnectionDetails = (function () {
             if (groupId === destination.groupId) {
                 // populate destination port details
                 $('#read-only-connection-target-label').text('To output');
-                $('#read-only-connection-target').text(destination.name);
+                $('#read-only-connection-target').text(destination.name).attr('title', destination.name);
                 $('#read-only-connection-target-group-name').text(groupName);
 
                 deferred.resolve();
             } else {
                 $.ajax({
                     type: 'GET',
-                    url: '../nifi-api/controller/process-groups/' + encodeURIComponent(destination.groupId),
-                    data: {
-                        verbose: true
-                    },
+                    url: '../nifi-api/process-groups/' + encodeURIComponent(destination.groupId),
                     dataType: 'json'
                 }).done(function (response) {
-                    var processGroup = response.processGroup;
+                    var processGroup = response.component;
 
                     // populate destination port details
                     $('#read-only-connection-target-label').text('To input');
-                    $('#read-only-connection-target').text(destination.name);
+                    $('#read-only-connection-target').text(destination.name).attr('title', destination.name);
                     $('#read-only-connection-target-group-name').text(processGroup.name);
 
                     deferred.resolve();
-                }).fail(function () {
-                    deferred.reject();
+                }).fail(function (xhr, status, error) {
+                    if (xhr.status === 403) {
+                        // populate source port details
+                        $('#read-only-connection-target-label').text('To input');
+                        $('#read-only-connection-target').text(destination.name).attr('title', destination.name);
+                        $('#read-only-connection-target-group-name').text(destination.groupId);
+
+                        deferred.resolve();
+                    } else {
+                        deferred.reject(xhr, status, error);
+                    }
                 });
             }
         }).promise();
@@ -276,56 +360,58 @@ nf.ConnectionDetails = (function () {
 
     /**
      * Creates the relationship option for the specified relationship.
-     * 
+     *
      * @argument {string} name      The relationship name
      */
     var createRelationshipOption = function (name) {
         $('<div class="available-relationship-container"></div>').append(
-                $('<div class="relationship-name"></div>').text(name)).appendTo('#read-only-relationship-names');
+            $('<div class="relationship-name"></div>').text(name)).appendTo('#read-only-relationship-names');
     };
 
     return {
         /**
          * Initializes the connection details dialog.
-         * 
-         * @param {boolean} overlayBackground       Whether to overlay the background
          */
-        init: function (overlayBackground) {
-            overlayBackground = nf.Common.isDefinedAndNotNull(overlayBackground) ? overlayBackground : true;
-
+        init: function () {
             // initialize the details tabs
             $('#connection-details-tabs').tabbs({
                 tabStyle: 'tab',
                 selectedTabStyle: 'selected-tab',
+                scrollableTabContentStyle: 'scrollable',
                 tabs: [{
-                        name: 'Details',
-                        tabContentId: 'read-only-connection-details-tab-content'
-                    }, {
-                        name: 'Settings',
-                        tabContentId: 'read-only-connection-settings-tab-content'
-                    }]
+                    name: 'Details',
+                    tabContentId: 'read-only-connection-details-tab-content'
+                }, {
+                    name: 'Settings',
+                    tabContentId: 'read-only-connection-settings-tab-content'
+                }]
             });
 
             // configure the connection details dialog
             $('#connection-details').modal({
                 headerText: 'Connection Details',
-                overlayBackground: overlayBackground,
+                scrollableContentStyle: 'scrollable',
                 buttons: [{
-                        buttonText: 'Ok',
-                        handler: {
-                            click: function () {
-                                $('#connection-details').modal('hide');
-                            }
+                    buttonText: 'Ok',
+                    color: {
+                        base: '#728E9B',
+                        hover: '#004849',
+                        text: '#ffffff'
+                    },
+                    handler: {
+                        click: function () {
+                            $('#connection-details').modal('hide');
                         }
-                    }],
+                    }
+                }],
                 handler: {
                     close: function () {
                         // clear the relationship names
                         $('#read-only-relationship-names').empty();
 
                         // clear the connection details
-                        nf.Common.clearField('read-only-connection-name');
-                        nf.Common.clearField('read-only-connection-id');
+                        nfCommon.clearField('read-only-connection-name');
+                        nfCommon.clearField('read-only-connection-id');
 
                         // clear the connection source details
                         $('#read-only-connection-source-label').text('');
@@ -345,21 +431,17 @@ nf.ConnectionDetails = (function () {
                         $('#read-only-back-pressure-object-threshold').text('');
                         $('#read-only-back-pressure-data-size-threshold').text('');
                         $('#read-only-prioritizers').empty();
+                    },
+                    open: function () {
+                        nfCommon.toggleScrollable($('#' + this.find('.tab-container').attr('id') + '-content').get(0));
                     }
                 }
             });
-            
-            if (overlayBackground) {
-                $('#connection-details').draggable({
-                    containment: 'parent',
-                    handle: '.dialog-header'
-                });
-            }
         },
-        
+
         /**
          * Shows the details for the specified edge.
-         * 
+         *
          * @argument {string} groupId           The group id
          * @argument {string} connectionId      The connection id
          */
@@ -367,14 +449,14 @@ nf.ConnectionDetails = (function () {
             // get the group details
             var groupXhr = $.ajax({
                 type: 'GET',
-                url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId),
+                url: '../nifi-api/flow/process-groups/' + encodeURIComponent(groupId),
                 dataType: 'json'
             });
 
             // get the connection details
             var connectionXhr = $.ajax({
                 type: 'GET',
-                url: '../nifi-api/controller/process-groups/' + encodeURIComponent(groupId) + '/connections/' + encodeURIComponent(connectionId),
+                url: '../nifi-api/connections/' + encodeURIComponent(connectionId),
                 dataType: 'json'
             });
 
@@ -383,15 +465,16 @@ nf.ConnectionDetails = (function () {
                 var groupResponse = groupResult[0];
                 var connectionResponse = connectionResult[0];
 
-                if (nf.Common.isDefinedAndNotNull(groupResponse.processGroup) && nf.Common.isDefinedAndNotNull(connectionResponse.connection)) {
-                    var processGroup = groupResponse.processGroup;
-                    var connection = connectionResponse.connection;
+                // ensure we can read this connection.. though should never fail as the request returned successfully
+                if (connectionResponse.permissions.canRead) {
+                    var connection = connectionResponse.component;
+                    var groupName = groupResponse.permissions.canRead ? groupResponse.processGroupFlow.breadcrumb.breadcrumb.name : groupResponse.processGroupFlow.id;
 
                     // process the source
-                    var connectionSource = initializeConnectionSource(processGroup.id, processGroup.name, connection.source);
+                    var connectionSource = initializeConnectionSource(groupResponse.id, groupName, connection.source);
 
                     // process the destination
-                    var connectionDestination = initializeConnectionDestination(processGroup.id, processGroup.name, connection.destination);
+                    var connectionDestination = initializeConnectionDestination(groupResponse.id, groupName, connection.destination);
 
                     // finish populating the dialog once the source and destination have been loaded
                     $.when(connectionSource, connectionDestination).done(function () {
@@ -400,7 +483,7 @@ nf.ConnectionDetails = (function () {
                         var selectedRelationships = connection.selectedRelationships;
 
                         // show the available relationship if applicable
-                        if (nf.Common.isDefinedAndNotNull(availableRelationships) || nf.Common.isDefinedAndNotNull(selectedRelationships)) {
+                        if (nfCommon.isDefinedAndNotNull(availableRelationships) || nfCommon.isDefinedAndNotNull(selectedRelationships)) {
                             // populate the available connections
                             $.each(availableRelationships, function (i, name) {
                                 createRelationshipOption(name);
@@ -433,17 +516,17 @@ nf.ConnectionDetails = (function () {
                         }
 
                         // set the connection details
-                        nf.Common.populateField('read-only-connection-name', connection.name);
-                        nf.Common.populateField('read-only-connection-id', connection.id);
-                        nf.Common.populateField('read-only-flow-file-expiration', connection.flowFileExpiration);
-                        nf.Common.populateField('read-only-back-pressure-object-threshold', connection.backPressureObjectThreshold);
-                        nf.Common.populateField('read-only-back-pressure-data-size-threshold', connection.backPressureDataSizeThreshold);
+                        nfCommon.populateField('read-only-connection-name', connection.name);
+                        nfCommon.populateField('read-only-connection-id', connection.id);
+                        nfCommon.populateField('read-only-flow-file-expiration', connection.flowFileExpiration);
+                        nfCommon.populateField('read-only-back-pressure-object-threshold', connection.backPressureObjectThreshold);
+                        nfCommon.populateField('read-only-back-pressure-data-size-threshold', connection.backPressureDataSizeThreshold);
 
                         // prioritizers
-                        if (nf.Common.isDefinedAndNotNull(connection.prioritizers) && connection.prioritizers.length > 0) {
+                        if (nfCommon.isDefinedAndNotNull(connection.prioritizers) && connection.prioritizers.length > 0) {
                             var prioritizerList = $('<ol></ol>').css('list-style', 'decimal inside none');
                             $.each(connection.prioritizers, function (i, type) {
-                                prioritizerList.append($('<li></li>').text(nf.Common.substringAfterLast(type, '.')));
+                                prioritizerList.append($('<li></li>').text(nfCommon.substringAfterLast(type, '.')));
                             });
                             $('#read-only-prioritizers').append(prioritizerList);
                         } else {
@@ -459,12 +542,12 @@ nf.ConnectionDetails = (function () {
 
                         // show the border if necessary
                         var relationshipNames = $('#read-only-relationship-names');
-                        if (relationshipNames.is(':visible') && relationshipNames.get(0).scrollHeight > relationshipNames.innerHeight()) {
+                        if (relationshipNames.is(':visible') && relationshipNames.get(0).scrollHeight > Math.round(relationshipNames.innerHeight())) {
                             relationshipNames.css('border-width', '1px');
                         }
-                    });
+                    }).fail(nfErrorHandler.handleAjaxError);
                 }
-            }).fail(nf.Common.handleAjaxError);
+            }).fail(nfErrorHandler.handleAjaxError);
         }
     };
-}());
+}));

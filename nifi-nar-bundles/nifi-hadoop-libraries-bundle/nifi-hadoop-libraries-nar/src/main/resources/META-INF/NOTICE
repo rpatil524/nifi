@@ -1,5 +1,5 @@
 nifi-hadoop-libraries-nar
-Copyright 2014-2015 The Apache Software Foundation
+Copyright 2014-2017 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
@@ -136,7 +136,7 @@ The following binary components are provided under the Apache Software License v
   (ASLv2) Apache Commons IO
     The following NOTICE information applies:
       Apache Commons IO
-      Copyright 2002-2012 The Apache Software Foundation
+      Copyright 2002-2016 The Apache Software Foundation
 
   (ASLv2) Apache Commons Net
     The following NOTICE information applies:
@@ -147,10 +147,6 @@ The following binary components are provided under the Apache Software License v
     The following NOTICE information applies:
       Apache Commons Collections
       Copyright 2001-2008 The Apache Software Foundation	
-
-  (ASLv2) Jettison
-    The following NOTICE information applies:
-         Copyright 2006 Envoi Solutions LLC
 
   (ASLv2) Apache Commons Logging
     The following NOTICE information applies:
@@ -169,11 +165,14 @@ The following binary components are provided under the Apache Software License v
 
   (ASLv2) Apache HttpComponents
     The following NOTICE information applies:
-      Apache HttpClient
-      Copyright 1999-2015 The Apache Software Foundation
-      
-      Apache HttpComponents HttpCore
-      Copyright 2005-2011 The Apache Software Foundation
+      Apache HttpComponents Client
+      Copyright 1999-2012 The Apache Software Foundation
+
+      Apache HttpComponents Core
+      Copyright 2005-2013 The Apache Software Foundation
+
+      This project contains annotations derived from JCIP-ANNOTATIONS
+      Copyright (c) 2005 Brian Goetz and Tim Peierls. See http://www.jcip.net
 
   (ASLv2) Apache Commons Configuration
     The following NOTICE information applies:
@@ -254,13 +253,32 @@ The following binary components are provided under the Apache Software License v
           Apache Software Foundation that were originally developed at iClick, Inc.,
           software copyright (c) 1999.
 
-  (ASLv2) Google Guice
+  (ASLv2) Apache HTrace Core
     The following NOTICE information applies:
-      Google Guice - Core Library
-      Copyright 2006-2011 Google, Inc.
+      Copyright 2016 The Apache Software Foundation
 
-      Google Guice - Extensions - Servlet
-      Copyright 2006-2011 Google, Inc.
+      Apache HTrace includes an Apache Thrift connector to Zipkin. Zipkin
+      is a distributed tracing system that is Apache 2.0 Licensed.
+      Copyright 2012 Twitter, Inc.
+
+  (ASLv2) Apache Tomcat
+    The following NOTICE information applies:
+      Apache Tomcat
+      Copyright 2007 The Apache Software Foundation
+
+        Java Management Extensions (JMX) support is provided by
+        the MX4J package, which is open source software.  The
+        original software and related information is available
+        at http://mx4j.sourceforge.net.
+
+        Java compilation software for JSP pages is provided by Eclipse,
+        which is open source software.  The orginal software and
+        related infomation is available at
+        http://www.eclipse.org.
+
+  (ASLv2) Google GSON
+    The following NOTICE information applies:
+      Copyright 2008 Google Inc.
 
 ************************
 Common Development and Distribution License 1.1
@@ -268,12 +286,8 @@ Common Development and Distribution License 1.1
 
 The following binary components are provided under the Common Development and Distribution License 1.1. See project link for details.
 
-    (CDDL 1.1) (GPL2 w/ CPE) jersey-server (com.sun.jersey:jersey-server:jar:1.19 - https://jersey.java.net/jersey-server/)
     (CDDL 1.1) (GPL2 w/ CPE) jersey-client (com.sun.jersey:jersey-client:jar:1.19 - https://jersey.java.net/jersey-client/)
     (CDDL 1.1) (GPL2 w/ CPE) jersey-core (com.sun.jersey:jersey-core:jar:1.19 - https://jersey.java.net/jersey-core/)
-    (CDDL 1.1) (GPL2 w/ CPE) jersey-json (com.sun.jersey:jersey-json:jar:1.19 - https://jersey.java.net/index.html)
-    (CDDL 1.1) (GPL2 w/ CPE) jersey-juice (com.sun.jersey:jersey-juice:jar:1.9 - https://jersey.java.net/index.html)
-    (CDDL 1.1) (GPL2 w/ CPE) Old JAXB Runtime (com.sun.xml.bind:jaxb-impl:jar:2.2.3-1 - http://jaxb.java.net/)
     (CDDL 1.1) (GPL2 w/ CPE) Java Architecture For XML Binding (javax.xml.bind:jaxb-api:jar:2.2.2 - https://jaxb.dev.java.net/)
 
 ************************
@@ -285,7 +299,6 @@ The following binary components are provided under the Common Development and Di
     (CDDL 1.0) JavaServlet(TM) Specification (javax.servlet:servlet-api:jar:2.5 - no url available)
     (CDDL 1.0) (GPL3) Streaming API For XML (javax.xml.stream:stax-api:jar:1.0-2 - no url provided)
     (CDDL 1.0) JavaBeans Activation Framework (JAF) (javax.activation:activation:jar:1.1 - http://java.sun.com/products/javabeans/jaf/index.jsp)
-    (CDDL 1.0) JavaServer Pages(TM) API (javax.servlet.jsp:jsp-api:jar:2.1 - http://jsp.java.net)
     (CDDL 1.0) JSR311 API (javax.ws.rs:jsr311-api:jar:1.1.1 - https://jsr311.dev.java.net)
 
 *****************

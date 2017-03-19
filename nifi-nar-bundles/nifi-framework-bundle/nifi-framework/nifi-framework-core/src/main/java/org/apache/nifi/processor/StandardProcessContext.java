@@ -19,19 +19,25 @@ package org.apache.nifi.processor;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.apache.nifi.attribute.expression.language.PreparedQuery;
 import org.apache.nifi.attribute.expression.language.Query;
+import org.apache.nifi.attribute.expression.language.StandardPropertyValue;
+import org.apache.nifi.attribute.expression.language.Query.Range;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.connectable.Connection;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.controller.ProcessorNode;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.encrypt.StringEncryptor;
+import org.apache.nifi.registry.VariableRegistry;
+import org.apache.nifi.util.Connectables;
 
 public class StandardProcessContext implements ProcessContext, ControllerServiceLookup {
 
@@ -39,11 +45,16 @@ public class StandardProcessContext implements ProcessContext, ControllerService
     private final ControllerServiceProvider controllerServiceProvider;
     private final Map<PropertyDescriptor, PreparedQuery> preparedQueries;
     private final StringEncryptor encryptor;
+    private final StateManager stateManager;
+    private final VariableRegistry variableRegistry;
 
-    public StandardProcessContext(final ProcessorNode processorNode, final ControllerServiceProvider controllerServiceProvider, final StringEncryptor encryptor) {
+    public StandardProcessContext(final ProcessorNode processorNode, final ControllerServiceProvider controllerServiceProvider, final StringEncryptor encryptor, final StateManager stateManager,
+                                  final VariableRegistry variableRegistry) {
         this.procNode = processorNode;
         this.controllerServiceProvider = controllerServiceProvider;
         this.encryptor = encryptor;
+        this.stateManager = stateManager;
+        this.variableRegistry = variableRegistry;
 
         preparedQueries = new HashMap<>();
         for (final Map.Entry<PropertyDescriptor, String> entry : procNode.getProperties().entrySet()) {
@@ -53,8 +64,10 @@ public class StandardProcessContext implements ProcessContext, ControllerService
                 value = desc.getDefaultValue();
             }
 
-            final PreparedQuery pq = Query.prepare(value);
-            preparedQueries.put(desc, pq);
+            if (value != null) {
+                final PreparedQuery pq = Query.prepare(value);
+                preparedQueries.put(desc, pq);
+            }
         }
     }
 
@@ -79,12 +92,12 @@ public class StandardProcessContext implements ProcessContext, ControllerService
         final String setPropertyValue = procNode.getProperty(descriptor);
         final String propValue = (setPropertyValue == null) ? descriptor.getDefaultValue() : setPropertyValue;
 
-        return new StandardPropertyValue(propValue, this, preparedQueries.get(descriptor));
+        return new StandardPropertyValue(propValue, this, preparedQueries.get(descriptor), variableRegistry);
     }
 
     @Override
     public PropertyValue newPropertyValue(final String rawValue) {
-        return new StandardPropertyValue(rawValue, this, Query.prepare(rawValue));
+        return new StandardPropertyValue(rawValue, this, Query.prepare(rawValue), variableRegistry);
     }
 
     @Override
@@ -94,7 +107,7 @@ public class StandardProcessContext implements ProcessContext, ControllerService
 
     @Override
     public ControllerService getControllerService(final String serviceIdentifier) {
-        return controllerServiceProvider.getControllerService(serviceIdentifier);
+        return controllerServiceProvider.getControllerServiceForComponent(serviceIdentifier, procNode.getIdentifier());
     }
 
     @Override
@@ -127,7 +140,7 @@ public class StandardProcessContext implements ProcessContext, ControllerService
         if (!serviceType.isInterface()) {
             throw new IllegalArgumentException("ControllerServices may be referenced only via their interfaces; " + serviceType + " is not an interface");
         }
-        return controllerServiceProvider.getControllerServiceIdentifiers(serviceType);
+        return controllerServiceProvider.getControllerServiceIdentifiers(serviceType, procNode.getProcessGroup().getIdentifier());
     }
 
     @Override
@@ -185,9 +198,34 @@ public class StandardProcessContext implements ProcessContext, ControllerService
     }
 
     @Override
-    public boolean hasConnection(Relationship relationship) {
-        Set<Connection> connections = procNode.getConnections(relationship);
+    public boolean hasNonLoopConnection() {
+        return Connectables.hasNonLoopConnection(procNode);
+    }
+
+    @Override
+    public boolean hasConnection(final Relationship relationship) {
+        final Set<Connection> connections = procNode.getConnections(relationship);
         return connections != null && !connections.isEmpty();
+    }
+
+    @Override
+    public boolean isExpressionLanguagePresent(final PropertyDescriptor property) {
+        if (property == null || !property.isExpressionLanguageSupported()) {
+            return false;
+        }
+
+        final List<Range> elRanges = Query.extractExpressionRanges(getProperty(property).getValue());
+        return (elRanges != null && !elRanges.isEmpty());
+    }
+
+    @Override
+    public StateManager getStateManager() {
+        return stateManager;
+    }
+
+    @Override
+    public String getName() {
+        return procNode.getName();
     }
 
 }

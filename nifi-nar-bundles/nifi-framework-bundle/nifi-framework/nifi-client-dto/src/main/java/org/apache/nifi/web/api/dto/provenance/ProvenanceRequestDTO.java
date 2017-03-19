@@ -17,12 +17,12 @@
 package org.apache.nifi.web.api.dto.provenance;
 
 import com.wordnik.swagger.annotations.ApiModelProperty;
-import java.util.Date;
-import java.util.Map;
+import org.apache.nifi.web.api.dto.util.DateTimeAdapter;
 
 import javax.xml.bind.annotation.XmlType;
 import javax.xml.bind.annotation.adapters.XmlJavaTypeAdapter;
-import org.apache.nifi.web.api.dto.util.DateTimeAdapter;
+import java.util.Date;
+import java.util.Map;
 
 /**
  * A request for provenance.
@@ -31,11 +31,15 @@ import org.apache.nifi.web.api.dto.util.DateTimeAdapter;
 public class ProvenanceRequestDTO {
 
     private Map<String, String> searchTerms;
+    private String clusterNodeId;
     private Date startDate;
     private Date endDate;
     private String minimumFileSize;
     private String maximumFileSize;
     private Integer maxResults;
+
+    private Boolean summarize;
+    private Boolean incrementalResults;
 
     /**
      * @return the search terms to use for this search
@@ -56,7 +60,8 @@ public class ProvenanceRequestDTO {
      */
     @XmlJavaTypeAdapter(DateTimeAdapter.class)
     @ApiModelProperty(
-            value = "The earliest event time to include in the query."
+            value = "The earliest event time to include in the query.",
+            dataType = "string"
     )
     public Date getStartDate() {
         return startDate;
@@ -71,7 +76,8 @@ public class ProvenanceRequestDTO {
      */
     @XmlJavaTypeAdapter(DateTimeAdapter.class)
     @ApiModelProperty(
-            value = "The latest event time to include in the query."
+            value = "The latest event time to include in the query.",
+            dataType = "string"
     )
     public Date getEndDate() {
         return endDate;
@@ -121,5 +127,49 @@ public class ProvenanceRequestDTO {
 
     public void setMaxResults(Integer maxResults) {
         this.maxResults = maxResults;
+    }
+
+    /**
+     * @return id of the node in the cluster where this provenance originated
+     */
+    @ApiModelProperty(
+            value = "The id of the node in the cluster where this provenance originated."
+    )
+    public String getClusterNodeId() {
+        return clusterNodeId;
+    }
+
+    public void setClusterNodeId(String clusterNodeId) {
+        this.clusterNodeId = clusterNodeId;
+    }
+
+    /**
+     * @return whether or not incremental results are returned. If false, provenance events
+     * are only returned once the query completes. This property is true by default.
+     */
+    @ApiModelProperty(
+            value = "Whether or not incremental results are returned. If false, provenance events"
+                    + " are only returned once the query completes. This property is true by default."
+    )
+    public Boolean getIncrementalResults() {
+        return incrementalResults;
+    }
+
+    public void setIncrementalResults(Boolean incrementalResults) {
+        this.incrementalResults = incrementalResults;
+    }
+
+    /**
+     * @return whether or not to summarize provenance events returned. This property is false by default.
+     */
+    @ApiModelProperty(
+            value = "Whether or not to summarize provenance events returned. This property is false by default."
+    )
+    public Boolean getSummarize() {
+        return summarize;
+    }
+
+    public void setSummarize(Boolean summarize) {
+        this.summarize = summarize;
     }
 }

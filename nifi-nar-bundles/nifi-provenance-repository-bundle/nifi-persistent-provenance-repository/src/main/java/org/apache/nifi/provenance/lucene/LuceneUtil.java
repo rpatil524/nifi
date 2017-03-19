@@ -17,17 +17,26 @@
 package org.apache.nifi.provenance.lucene;
 
 import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.provenance.SearchableFields;
 import org.apache.nifi.provenance.search.SearchTerm;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
@@ -128,8 +137,14 @@ public class LuceneUtil {
         return luceneQuery;
     }
 
+    /**
+     * Will sort documents by filename and then file offset so that we can
+     * retrieve the records efficiently
+     *
+     * @param documents
+     *            list of {@link Document}s
+     */
     public static void sortDocsForRetrieval(final List<Document> documents) {
-        // sort by filename and then file offset so that we can retrieve the records efficiently
         Collections.sort(documents, new Comparator<Document>() {
             @Override
             public int compare(final Document o1, final Document o2) {
@@ -159,5 +174,64 @@ public class LuceneUtil {
                 return Long.compare(offset1, offset2);
             }
         });
+    }
+
+    /**
+     * Will group documents based on the {@link FieldNames#STORAGE_FILENAME}.
+     *
+     * @param documents
+     *            list of {@link Document}s which will be sorted via
+     *            {@link #sortDocsForRetrieval(List)} for more efficient record
+     *            retrieval.
+     * @return a {@link Map} of document groups with
+     *         {@link FieldNames#STORAGE_FILENAME} as key and {@link List} of
+     *         {@link Document}s as value.
+     */
+    public static Map<String, List<Document>> groupDocsByStorageFileName(final List<Document> documents) {
+        Map<String, List<Document>> documentGroups = new HashMap<>();
+        for (Document document : documents) {
+            String fileName = document.get(FieldNames.STORAGE_FILENAME);
+            if (!documentGroups.containsKey(fileName)) {
+                documentGroups.put(fileName, new ArrayList<Document>());
+            }
+            documentGroups.get(fileName).add(document);
+        }
+        for (List<Document> groupedDocuments : documentGroups.values()) {
+            sortDocsForRetrieval(groupedDocuments);
+        }
+        return documentGroups;
+    }
+
+    /**
+     * Truncate a single field so that it does not exceed Lucene's byte size limit on indexed terms.
+     *
+     * @param field the string to be indexed
+     * @return a string that can be indexed which is within Lucene's byte size limit, or null if anything goes wrong
+     */
+    public static String truncateIndexField(String field) {
+        if (field == null) {
+            return field;
+        }
+
+        Charset charset = Charset.defaultCharset();
+        byte[] bytes = field.getBytes(charset);
+        if (bytes.length <= IndexWriter.MAX_TERM_LENGTH) {
+            return field;
+        }
+
+        // chop the field to maximum allowed byte length
+        ByteBuffer bbuf = ByteBuffer.wrap(bytes, 0, IndexWriter.MAX_TERM_LENGTH);
+
+        try {
+            // decode the chopped byte buffer back into original charset
+            CharsetDecoder decoder = charset.newDecoder();
+            decoder.onMalformedInput(CodingErrorAction.IGNORE);
+            decoder.reset();
+            CharBuffer cbuf = decoder.decode(bbuf);
+            return cbuf.toString();
+        } catch (CharacterCodingException shouldNotHappen) {}
+
+        // if we get here, something bad has happened
+        return null;
     }
 }

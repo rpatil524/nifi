@@ -15,83 +15,98 @@
  * limitations under the License.
  */
 
-/* global nf */
+/* global define, module, require, exports */
 
-$(document).ready(function () {
-    // setup general button mouse behavior
-    nf.Common.addHoverEffect('div.button', 'button-normal', 'button-over');
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        define(['jquery'], function ($) {
+            return (nf.Dialog = factory($));
+        });
+    } else if (typeof exports === 'object' && typeof module === 'object') {
+        module.exports = (nf.Dialog = factory(require('jquery')));
+    } else {
+        nf.Dialog = factory(root.$);
+    }
+}(this, function ($) {
+    'use strict';
 
-    // configure the ok dialog
-    $('#nf-ok-dialog').modal({
-        buttons: [{
-                buttonText: 'Ok',
-                handler: {
-                    click: function () {
-                        // close the dialog
-                        $('#nf-ok-dialog').modal('hide');
-                    }
+    $(document).ready(function () {
+        // configure the ok dialog
+        $('#nf-ok-dialog').modal({
+            scrollableContentStyle: 'scrollable',
+            handler: {
+                close: function () {
+                    // clear the content
+                    $('#nf-ok-dialog-content').empty();
                 }
-            }],
-        handler: {
-            close: function () {
-                // clear the content
-                $('#nf-ok-dialog-content').empty();
             }
-        }
-    }).draggable({
-        containment: 'parent',
-        handle: '.dialog-header'
+        });
+
+        // configure the yes/no dialog
+        $('#nf-yes-no-dialog').modal({
+            scrollableContentStyle: 'scrollable',
+            handler: {
+                close: function () {
+                    // clear the content and reset the button model
+                    $('#nf-yes-no-dialog-content').empty();
+                    $('#nf-yes-no-dialog').modal('setButtonModel', []);
+                }
+            }
+        });
     });
 
-    // configure the yes/no dialog
-    $('#nf-yes-no-dialog').modal({
-        handler: {
-            close: function () {
-                // clear the content
-                $('#nf-yes-no-dialog-content').empty();
-            }
-        }
-    }).draggable({
-        containment: 'parent',
-        handle: '.dialog-header'
-    });
-});
-
-nf.Dialog = (function () {
-
-    return {
+    var nfDialog = {
         /**
          * Shows an general dialog with an Okay button populated with the
          * specified dialog content.
-         * 
+         *
          * @argument {object} options       Dialog options
          */
         showOkDialog: function (options) {
             options = $.extend({
                 headerText: '',
-                dialogContent: '',
-                overlayBackground: true
+                dialogContent: ''
             }, options);
 
             // regardless of whether the dialog is already visible, the new content will be appended
             var content = $('<p></p>').append(options.dialogContent);
             $('#nf-ok-dialog-content').append(content);
 
+            // update the button model
+            $('#nf-ok-dialog').modal('setButtonModel', [{
+                buttonText: 'Ok',
+                color: {
+                    base: '#728E9B',
+                    hover: '#004849',
+                    text: '#ffffff'
+                },
+                handler: {
+                    click: function () {
+                        // close the dialog
+                        $('#nf-ok-dialog').modal('hide');
+                        if (typeof options.okHandler === 'function') {
+                            options.okHandler.call(this);
+                        }
+                    }
+                }
+            }]);
+
             // show the dialog
-            $('#nf-ok-dialog').modal('setHeaderText', options.headerText).modal('setOverlayBackground', options.overlayBackground).modal('show');
+            $('#nf-ok-dialog').modal('setHeaderText', options.headerText).modal('show');
         },
-        
+
         /**
          * Shows an general dialog with Yes and No buttons populated with the
          * specified dialog content.
-         * 
+         *
          * @argument {object} options       Dialog options
          */
         showYesNoDialog: function (options) {
             options = $.extend({
                 headerText: '',
                 dialogContent: '',
-                overlayBackgrond: true
+                yesText: 'Yes',
+                noText: 'No'
             }, options);
 
             // add the content to the prompt
@@ -100,18 +115,29 @@ nf.Dialog = (function () {
 
             // update the button model
             $('#nf-yes-no-dialog').modal('setButtonModel', [{
-                    buttonText: 'Yes',
-                    handler: {
-                        click: function () {
-                            // close the dialog
-                            $('#nf-yes-no-dialog').modal('hide');
-                            if (typeof options.yesHandler === 'function') {
-                                options.yesHandler.call(this);
-                            }
+                buttonText: options.yesText,
+                color: {
+                    base: '#728E9B',
+                    hover: '#004849',
+                    text: '#ffffff'
+                },
+                handler: {
+                    click: function () {
+                        // close the dialog
+                        $('#nf-yes-no-dialog').modal('hide');
+                        if (typeof options.yesHandler === 'function') {
+                            options.yesHandler.call(this);
                         }
                     }
-                }, {
-                    buttonText: 'No',
+                }
+            },
+                {
+                    buttonText: options.noText,
+                    color: {
+                        base: '#E3E8EB',
+                        hover: '#C7D2D7',
+                        text: '#004849'
+                    },
                     handler: {
                         click: function () {
                             // close the dialog
@@ -124,7 +150,29 @@ nf.Dialog = (function () {
                 }]);
 
             // show the dialog
-            $('#nf-yes-no-dialog').modal('setHeaderText', options.headerText).modal('setOverlayBackground', options.overlayBackground).modal('show');
+            $('#nf-yes-no-dialog').modal('setHeaderText', options.headerText).modal('show');
+        },
+
+        /**
+         * Shows a message when disconnected from the cluster.
+         */
+        showDisconnectedFromClusterMessage: function () {
+            nfDialog.showOkDialog({
+                headerText: 'Cluster Connection',
+                dialogContent: 'This node is currently not connected to the cluster. Any modifications to the data flow made here will not replicate across the cluster.'
+            });
+        },
+
+        /**
+         * Shows a message when connected to the cluster.
+         */
+        showConnectedToClusterMessage: function () {
+            nfDialog.showOkDialog({
+                headerText: 'Cluster Connection',
+                dialogContent: 'This node just joined the cluster. Any modifications to the data flow made here will replicate across the cluster.'
+            });
         }
     };
-}());
+
+    return nfDialog;
+}));

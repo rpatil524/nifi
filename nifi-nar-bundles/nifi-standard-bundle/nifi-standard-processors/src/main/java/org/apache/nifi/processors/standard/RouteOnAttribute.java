@@ -29,6 +29,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.DynamicRelationship;
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
@@ -39,7 +41,7 @@ import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.expression.AttributeExpression.ResultType;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -59,6 +61,7 @@ import org.apache.nifi.processor.util.StandardValidators;
 @EventDriven
 @SideEffectFree
 @SupportsBatching
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"attributes", "routing", "Attribute Expression Language", "regexp", "regex", "Regular Expression", "Expression Language"})
 @CapabilityDescription("Routes FlowFiles based on their Attributes using the Attribute Expression Language")
 @DynamicProperty(name = "Relationship Name", value = "Attribute Expression Language", supportsExpressionLanguage = true, description = "Routes FlowFiles whose "
@@ -80,7 +83,7 @@ public class RouteOnAttribute extends AbstractProcessor {
     // keep the word 'match' instead of 'matched' to maintain backward compatibility (there was a typo originally)
     public static final AllowableValue ROUTE_ANY_MATCHES = new AllowableValue(routeAnyMatches,
             "Route to 'matched' if any matches",
-            "Requires that at least one user-defined expression evaluate to 'true' for hte FlowFile to be considered a match");
+            "Requires that at least one user-defined expression evaluate to 'true' for the FlowFile to be considered a match");
 
     public static final PropertyDescriptor ROUTE_STRATEGY = new PropertyDescriptor.Builder()
             .name("Routing Strategy")
@@ -200,7 +203,7 @@ public class RouteOnAttribute extends AbstractProcessor {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         final Map<Relationship, PropertyValue> propMap = this.propertyMap;
         final Set<Relationship> matchingRelationships = new HashSet<>();

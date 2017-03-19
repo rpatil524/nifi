@@ -23,19 +23,21 @@ import java.util.Map;
 import org.apache.nifi.attribute.expression.language.Query;
 import org.apache.nifi.attribute.expression.language.Query.Range;
 import org.apache.nifi.attribute.expression.language.StandardExpressionLanguageCompiler;
-import org.apache.nifi.bootstrap.NotificationServicePropertyValue;
+import org.apache.nifi.attribute.expression.language.StandardPropertyValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ControllerServiceLookup;
 import org.apache.nifi.expression.ExpressionLanguageCompiler;
+import org.apache.nifi.registry.VariableRegistry;
 
 public class NotificationValidationContext implements ValidationContext {
     private final NotificationContext context;
     private final Map<String, Boolean> expressionLanguageSupported;
+    private final VariableRegistry variableRegistry;
 
-    public NotificationValidationContext(final NotificationContext processContext) {
+    public NotificationValidationContext(final NotificationContext processContext, VariableRegistry variableRegistry) {
         this.context = processContext;
 
         final Map<PropertyDescriptor, String> properties = processContext.getProperties();
@@ -43,17 +45,19 @@ public class NotificationValidationContext implements ValidationContext {
         for (final PropertyDescriptor descriptor : properties.keySet()) {
             expressionLanguageSupported.put(descriptor.getName(), descriptor.isExpressionLanguageSupported());
         }
+        this.variableRegistry = variableRegistry;
     }
 
 
     @Override
     public PropertyValue newPropertyValue(final String rawValue) {
-        return new NotificationServicePropertyValue(rawValue);
+        return new StandardPropertyValue(rawValue, null, variableRegistry);
     }
 
     @Override
     public ExpressionLanguageCompiler newExpressionLanguageCompiler() {
-        return new StandardExpressionLanguageCompiler();
+
+        return new StandardExpressionLanguageCompiler(null);
     }
 
     @Override
@@ -102,4 +106,8 @@ public class NotificationValidationContext implements ValidationContext {
         return Boolean.TRUE.equals(supported);
     }
 
+    @Override
+    public String getProcessGroupIdentifier() {
+        return null;
+    }
 }

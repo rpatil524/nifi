@@ -21,14 +21,15 @@ package org.apache.nifi.cluster.protocol.jaxb.message;
 public class AdaptedNodeIdentifier {
 
     private String id;
-
     private String apiAddress;
-
     private int apiPort;
-
     private String socketAddress;
-
     private int socketPort;
+    private String siteToSiteAddress;
+    private Integer siteToSitePort;
+    private Integer siteToSiteHttpApiPort;
+
+    private boolean siteToSiteSecure;
 
     public AdaptedNodeIdentifier() {
     }
@@ -71,6 +72,39 @@ public class AdaptedNodeIdentifier {
 
     public void setSocketPort(int socketPort) {
         this.socketPort = socketPort;
+    }
+
+    public String getSiteToSiteAddress() {
+        return siteToSiteAddress;
+    }
+
+    public void setSiteToSiteAddress(String siteToSiteAddress) {
+        this.siteToSiteAddress = siteToSiteAddress;
+    }
+
+    public Integer getSiteToSitePort() {
+        return siteToSitePort;
+    }
+
+    public void setSiteToSitePort(Integer siteToSitePort) {
+        this.siteToSitePort = siteToSitePort;
+    }
+
+
+    public boolean isSiteToSiteSecure() {
+        return siteToSiteSecure;
+    }
+
+    public void setSiteToSiteSecure(boolean siteToSiteSecure) {
+        this.siteToSiteSecure = siteToSiteSecure;
+    }
+
+    public Integer getSiteToSiteHttpApiPort() {
+        return siteToSiteHttpApiPort;
+    }
+
+    public void setSiteToSiteHttpApiPort(Integer siteToSiteHttpApiPort) {
+        this.siteToSiteHttpApiPort = siteToSiteHttpApiPort;
     }
 
 }

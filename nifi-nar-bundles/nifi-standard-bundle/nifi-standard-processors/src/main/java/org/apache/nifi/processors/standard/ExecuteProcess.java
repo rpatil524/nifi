@@ -16,6 +16,30 @@
  */
 package org.apache.nifi.processors.standard;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.DynamicProperty;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.Restricted;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.annotation.lifecycle.OnScheduled;
+import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.Validator;
+import org.apache.nifi.flowfile.FlowFile;
+import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.processor.AbstractProcessor;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.processor.io.OutputStreamCallback;
+import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.processors.standard.util.ArgumentUtils;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -41,31 +65,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.annotation.behavior.DynamicProperty;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.lifecycle.OnScheduled;
-import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.components.Validator;
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
-import org.apache.nifi.processor.AbstractProcessor;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.exception.ProcessException;
-import org.apache.nifi.processor.io.OutputStreamCallback;
-import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.processors.standard.util.ArgumentUtils;
-
-@Tags({"command", "process", "source", "external", "invoke", "script"})
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
+@Tags({"command", "process", "source", "external", "invoke", "script", "restricted"})
 @CapabilityDescription("Runs an operating system command specified by the user and writes the output of that command to a FlowFile. If the command is expected "
         + "to be long-running, the Processor can output the partial data on a specified interval. When this option is used, the output is expected to be in textual "
         + "format, as it typically does not make sense to split binary data on arbitrary time-based intervals.")
 @DynamicProperty(name = "An environment variable name", value = "An environment variable value", description = "These environment variables are passed to the process spawned by this Processor")
+@Restricted("Provides operator the ability to execute arbitrary code assuming all permissions that NiFi has.")
+@WritesAttributes({
+    @WritesAttribute(attribute = "command", description = "Executed command"),
+    @WritesAttribute(attribute = "command.arguments", description = "Arguments of the command")
+})
 public class ExecuteProcess extends AbstractProcessor {
+
+    final static String ATTRIBUTE_COMMAND = "command";
+    final static String ATTRIBUTE_COMMAND_ARGS = "command.arguments";
 
     public static final PropertyDescriptor COMMAND = new PropertyDescriptor.Builder()
     .name("Command")
@@ -79,7 +93,7 @@ public class ExecuteProcess extends AbstractProcessor {
     .name("Command Arguments")
     .description("The arguments to supply to the executable delimited by white space. White space can be escaped by enclosing it in double-quotes.")
     .required(false)
-    .expressionLanguageSupported(false)
+    .expressionLanguageSupported(true)
     .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
     .build();
 
@@ -128,6 +142,8 @@ public class ExecuteProcess extends AbstractProcessor {
     .name("success")
     .description("All created FlowFiles are routed to this relationship")
     .build();
+
+    private volatile Process externalProcess;
 
     private volatile ExecutorService executor;
     private Future<?> longRunningProcess;
@@ -178,7 +194,14 @@ public class ExecuteProcess extends AbstractProcessor {
 
     @OnUnscheduled
     public void shutdownExecutor() {
-        executor.shutdown();
+        try {
+            executor.shutdown();
+        } finally {
+            if (this.externalProcess.isAlive()) {
+                this.getLogger().info("Process hasn't terminated, forcing the interrupt");
+                this.externalProcess.destroyForcibly();
+            }
+        }
     }
 
     @Override
@@ -189,7 +212,12 @@ public class ExecuteProcess extends AbstractProcessor {
 
         final Long batchNanos = context.getProperty(BATCH_DURATION).asTimePeriod(TimeUnit.NANOSECONDS);
 
-        final List<String> commandStrings = createCommandStrings(context);
+        final String command = context.getProperty(COMMAND).getValue();
+        final String arguments = context.getProperty(COMMAND_ARGUMENTS).isSet()
+          ? context.getProperty(COMMAND_ARGUMENTS).evaluateAttributeExpressions().getValue()
+          : null;
+
+        final List<String> commandStrings = createCommandStrings(context, command, arguments);
         final String commandString = StringUtils.join(commandStrings, " ");
 
         if (longRunningProcess == null || longRunningProcess.isDone()) {
@@ -252,6 +280,12 @@ public class ExecuteProcess extends AbstractProcessor {
             session.remove(flowFile);
             getLogger().error("Failed to read data from Process, so will not generate FlowFile");
         } else {
+            // add command and arguments as attribute
+            flowFile = session.putAttribute(flowFile, ATTRIBUTE_COMMAND, command);
+            if(arguments != null) {
+                flowFile = session.putAttribute(flowFile, ATTRIBUTE_COMMAND_ARGS, arguments);
+            }
+
             // All was good. Generate event and transfer FlowFile.
             session.getProvenanceReporter().create(flowFile, "Created from command: " + commandString);
             getLogger().info("Created {} and routed to success", new Object[] { flowFile });
@@ -262,11 +296,8 @@ public class ExecuteProcess extends AbstractProcessor {
         session.commit();
     }
 
-    protected List<String> createCommandStrings(final ProcessContext context) {
-        final String command = context.getProperty(COMMAND).getValue();
-        final List<String> args = ArgumentUtils.splitArgs(context.getProperty(COMMAND_ARGUMENTS).getValue(),
-          context.getProperty(ARG_DELIMITER).getValue().charAt(0));
-
+    protected List<String> createCommandStrings(final ProcessContext context, final String command, final String arguments) {
+        final List<String> args = ArgumentUtils.splitArgs(arguments, context.getProperty(ARG_DELIMITER).getValue().charAt(0));
         final List<String> commandStrings = new ArrayList<>(args.size() + 1);
         commandStrings.add(command);
         commandStrings.addAll(args);
@@ -296,16 +327,15 @@ public class ExecuteProcess extends AbstractProcessor {
         }
 
         getLogger().info("Start creating new Process > {} ", new Object[] { commandStrings });
-        final Process newProcess = builder.redirectErrorStream(redirectErrorStream).start();
+        this.externalProcess = builder.redirectErrorStream(redirectErrorStream).start();
 
         // Submit task to read error stream from process
         if (!redirectErrorStream) {
             executor.submit(new Runnable() {
                 @Override
                 public void run() {
-                    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(newProcess.getErrorStream()))) {
-                        while (reader.read() >= 0) {
-                        }
+                    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(externalProcess.getErrorStream()))) {
+                        reader.lines().filter(line -> line != null && line.length() > 0).forEach(getLogger()::warn);
                     } catch (final IOException ioe) {
                     }
                 }
@@ -321,7 +351,7 @@ public class ExecuteProcess extends AbstractProcessor {
                     if (batchNanos == null) {
                         // if we aren't batching, just copy the stream from the
                         // process to the flowfile.
-                        try (final BufferedInputStream bufferedIn = new BufferedInputStream(newProcess.getInputStream())) {
+                        try (final BufferedInputStream bufferedIn = new BufferedInputStream(externalProcess.getInputStream())) {
                             final byte[] buffer = new byte[4096];
                             int len;
                             while ((len = bufferedIn.read(buffer)) > 0) {
@@ -348,7 +378,7 @@ public class ExecuteProcess extends AbstractProcessor {
                         // Also, we don't want that text to get split up in the
                         // middle of a line, so we use BufferedReader
                         // to read lines of text and write them as lines of text.
-                        try (final BufferedReader reader = new BufferedReader(new InputStreamReader(newProcess.getInputStream()))) {
+                        try (final BufferedReader reader = new BufferedReader(new InputStreamReader(externalProcess.getInputStream()))) {
                             String line;
 
                             while ((line = reader.readLine()) != null) {
@@ -364,13 +394,15 @@ public class ExecuteProcess extends AbstractProcessor {
                     failure.set(true);
                     throw ioe;
                 } finally {
-                    int exitCode;
                     try {
-                        exitCode = newProcess.exitValue();
-                    } catch (final Exception e) {
-                        exitCode = -99999;
+                        // Since we are going to exit anyway, one sec gives it an extra chance to exit gracefully.
+                        // In the future consider exposing it via configuration.
+                        boolean terminated = externalProcess.waitFor(1000, TimeUnit.MILLISECONDS);
+                        int exitCode = terminated ? externalProcess.exitValue() : -9999;
+                        getLogger().info("Process finished with exit code {} ", new Object[] { exitCode });
+                    } catch (InterruptedException e1) {
+                        Thread.currentThread().interrupt();
                     }
-                    getLogger().info("Process finished with exit code {} ", new Object[] { exitCode });
                 }
 
                 return null;
@@ -386,12 +418,12 @@ public class ExecuteProcess extends AbstractProcessor {
      */
     private static class ProxyOutputStream extends OutputStream {
 
-        private final ProcessorLog logger;
+        private final ComponentLog logger;
 
         private final Lock lock = new ReentrantLock();
         private OutputStream delegate;
 
-        public ProxyOutputStream(final ProcessorLog logger) {
+        public ProxyOutputStream(final ComponentLog logger) {
             this.logger = logger;
         }
 
@@ -409,6 +441,7 @@ public class ExecuteProcess extends AbstractProcessor {
             try {
                 Thread.sleep(millis);
             } catch (final InterruptedException ie) {
+                Thread.currentThread().interrupt();
             }
         }
 

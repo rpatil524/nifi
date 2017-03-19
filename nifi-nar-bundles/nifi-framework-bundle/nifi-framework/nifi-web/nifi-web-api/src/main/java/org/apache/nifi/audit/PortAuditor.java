@@ -16,32 +16,32 @@
  */
 package org.apache.nifi.audit;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.Set;
-
+import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.action.Action;
 import org.apache.nifi.action.Component;
+import org.apache.nifi.action.FlowChangeAction;
 import org.apache.nifi.action.Operation;
 import org.apache.nifi.action.details.ActionDetails;
-import org.apache.nifi.action.details.ConfigureDetails;
+import org.apache.nifi.action.details.FlowChangeConfigureDetails;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.connectable.Port;
 import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.remote.RootGroupPort;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
-import org.apache.nifi.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.web.api.dto.PortDTO;
 import org.apache.nifi.web.dao.PortDAO;
-
-import org.apache.commons.lang3.StringUtils;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
 
 @Aspect
 public class PortAuditor extends NiFiAuditor {
@@ -76,18 +76,17 @@ public class PortAuditor extends NiFiAuditor {
      * Audits the update of a port.
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param portDTO port dto
      * @param portDAO port dao
      * @return port
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.PortDAO+) && "
-            + "execution(org.apache.nifi.connectable.Port updatePort(java.lang.String, org.apache.nifi.web.api.dto.PortDTO)) && "
-            + "args(groupId, portDTO) && "
+            + "execution(org.apache.nifi.connectable.Port updatePort(org.apache.nifi.web.api.dto.PortDTO)) && "
+            + "args(portDTO) && "
             + "target(portDAO)")
-    public Port updatePortAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, PortDTO portDTO, PortDAO portDAO) throws Throwable {
-        final Port port = portDAO.getPort(groupId, portDTO.getId());
+    public Port updatePortAdvice(ProceedingJoinPoint proceedingJoinPoint, PortDTO portDTO, PortDAO portDAO) throws Throwable {
+        final Port port = portDAO.getPort(portDTO.getId());
         final ScheduledState scheduledState = port.getScheduledState();
         final String name = port.getName();
         final String comments = port.getComments();
@@ -115,7 +114,7 @@ public class PortAuditor extends NiFiAuditor {
             // see if the name has changed
             if (name != null && portDTO.getName() != null && !name.equals(updatedPort.getName())) {
                 // create the config details
-                ConfigureDetails configDetails = new ConfigureDetails();
+                FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                 configDetails.setName("Name");
                 configDetails.setValue(updatedPort.getName());
                 configDetails.setPreviousValue(name);
@@ -126,7 +125,7 @@ public class PortAuditor extends NiFiAuditor {
             // see if the comments has changed
             if (comments != null && portDTO.getComments() != null && !comments.equals(updatedPort.getComments())) {
                 // create the config details
-                ConfigureDetails configDetails = new ConfigureDetails();
+                FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                 configDetails.setName("Comments");
                 configDetails.setValue(updatedPort.getComments());
                 configDetails.setPreviousValue(comments);
@@ -138,7 +137,7 @@ public class PortAuditor extends NiFiAuditor {
             if (isRootGroupPort) {
                 if (portDTO.getConcurrentlySchedulableTaskCount() != null && updatedPort.getMaxConcurrentTasks() != maxConcurrentTasks) {
                     // create the config details
-                    ConfigureDetails configDetails = new ConfigureDetails();
+                    FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                     configDetails.setName("Concurrent Tasks");
                     configDetails.setValue(String.valueOf(updatedPort.getMaxConcurrentTasks()));
                     configDetails.setPreviousValue(String.valueOf(maxConcurrentTasks));
@@ -157,7 +156,7 @@ public class PortAuditor extends NiFiAuditor {
                     // if users were added/removed
                     if (newUsers.size() > 0 || removedUsers.size() > 0) {
                         // create the config details
-                        ConfigureDetails configDetails = new ConfigureDetails();
+                        FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                         configDetails.setName("User Access Control");
                         configDetails.setValue(StringUtils.join(portDTO.getUserAccessControl(), ", "));
                         configDetails.setPreviousValue(StringUtils.join(existingUsers, ", "));
@@ -177,7 +176,7 @@ public class PortAuditor extends NiFiAuditor {
                     // if groups were added/removed
                     if (newGroups.size() > 0 || removedGroups.size() > 0) {
                         // create the config details
-                        ConfigureDetails configDetails = new ConfigureDetails();
+                        FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                         configDetails.setName("Group Access Control");
                         configDetails.setValue(StringUtils.join(portDTO.getGroupAccessControl(), ", "));
                         configDetails.setPreviousValue(StringUtils.join(existingGroups, ", "));
@@ -203,9 +202,8 @@ public class PortAuditor extends NiFiAuditor {
                 // create the actions
                 for (ActionDetails detail : configurationDetails) {
                     // create the port action for updating the name
-                    Action portAction = new Action();
-                    portAction.setUserDn(user.getDn());
-                    portAction.setUserName(user.getUserName());
+                    FlowChangeAction portAction = new FlowChangeAction();
+                    portAction.setUserIdentity(user.getIdentity());
                     portAction.setOperation(Operation.Configure);
                     portAction.setTimestamp(timestamp);
                     portAction.setSourceId(updatedPort.getIdentifier());
@@ -223,9 +221,8 @@ public class PortAuditor extends NiFiAuditor {
             // determine if the running state has changed
             if (scheduledState != updatedScheduledState) {
                 // create a processor action
-                Action processorAction = new Action();
-                processorAction.setUserDn(user.getDn());
-                processorAction.setUserName(user.getUserName());
+                FlowChangeAction processorAction = new FlowChangeAction();
+                processorAction.setUserIdentity(user.getIdentity());
                 processorAction.setTimestamp(new Date());
                 processorAction.setSourceId(updatedPort.getIdentifier());
                 processorAction.setSourceName(updatedPort.getName());
@@ -261,18 +258,17 @@ public class PortAuditor extends NiFiAuditor {
      * Audits the removal of a processor via deleteProcessor().
      *
      * @param proceedingJoinPoint join point
-     * @param groupId group id
      * @param portId port id
      * @param portDAO port dao
      * @throws Throwable ex
      */
     @Around("within(org.apache.nifi.web.dao.PortDAO+) && "
-            + "execution(void deletePort(java.lang.String, java.lang.String)) && "
-            + "args(groupId, portId) && "
+            + "execution(void deletePort(java.lang.String)) && "
+            + "args(portId) && "
             + "target(portDAO)")
-    public void removePortAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, String portId, PortDAO portDAO) throws Throwable {
+    public void removePortAdvice(ProceedingJoinPoint proceedingJoinPoint, String portId, PortDAO portDAO) throws Throwable {
         // get the port before removing it
-        Port port = portDAO.getPort(groupId, portId);
+        Port port = portDAO.getPort(portId);
 
         // remove the port
         proceedingJoinPoint.proceed();
@@ -307,7 +303,7 @@ public class PortAuditor extends NiFiAuditor {
      * @return action
      */
     public Action generateAuditRecord(Port port, Operation operation, ActionDetails actionDetails) {
-        Action action = null;
+        FlowChangeAction action = null;
 
         // get the current user
         NiFiUser user = NiFiUserUtils.getNiFiUser();
@@ -321,9 +317,8 @@ public class PortAuditor extends NiFiAuditor {
             }
 
             // create the port action for adding this processor
-            action = new Action();
-            action.setUserDn(user.getDn());
-            action.setUserName(user.getUserName());
+            action = new FlowChangeAction();
+            action.setUserIdentity(user.getIdentity());
             action.setOperation(operation);
             action.setTimestamp(new Date());
             action.setSourceId(port.getIdentifier());

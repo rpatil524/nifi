@@ -18,12 +18,14 @@ package org.apache.nifi.provenance;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Describes an event that happened to a FlowFile.
  */
 public interface ProvenanceEventRecord {
+
+    String REMOTE_INPUT_PORT_TYPE = "Remote Input Port";
+    String REMOTE_OUTPUT_PORT_TYPE = "Remote Output Port";
 
     /**
      * @return a unique ID for this Provenance Event. Depending on the
@@ -47,12 +49,6 @@ public interface ProvenanceEventRecord {
      * @return the time at which the lineage began
      */
     long getLineageStartDate();
-
-    /**
-     * @return the set of all lineage identifiers that are associated with the
-     * FlowFile for which this Event was created
-     */
-    Set<String> getLineageIdentifiers();
 
     /**
      * @return the size of the FlowFile to which this Event is associated
@@ -84,6 +80,16 @@ public interface ProvenanceEventRecord {
     Map<String, String> getAttributes();
 
     /**
+     * Returns the attribute with the given name
+     *
+     * @param attributeName the name of the attribute to get
+     * @return the attribute with the given name or <code>null</code> if no attribute exists with the given name
+     */
+    default String getAttribute(String attributeName) {
+        return getAttributes().get(attributeName);
+    }
+
+    /**
      * @return all FlowFile attributes that existed on the FlowFile before this
      * event occurred
      */
@@ -106,6 +112,14 @@ public interface ProvenanceEventRecord {
      * created this Provenance Event
      */
     String getComponentType();
+
+    /**
+     * @return whether this event originated from a remote group port
+     */
+    default boolean isRemotePortType() {
+        final String componentType = getComponentType();
+        return REMOTE_INPUT_PORT_TYPE.equals(componentType) || REMOTE_OUTPUT_PORT_TYPE.equals(componentType);
+    }
 
     /**
      * @return a URI that provides information about the System and Protocol

@@ -28,11 +28,13 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.distributed.cache.client.Deserializer;
 import org.apache.nifi.distributed.cache.client.DistributedMapCacheClient;
@@ -41,7 +43,7 @@ import org.apache.nifi.distributed.cache.client.exception.DeserializationExcepti
 import org.apache.nifi.distributed.cache.client.exception.SerializationException;
 import org.apache.nifi.expression.AttributeExpression.ResultType;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -52,8 +54,9 @@ import org.apache.nifi.processor.util.StandardValidators;
 @EventDriven
 @SupportsBatching
 @Tags({"hash", "dupe", "duplicate", "dedupe"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Caches a value, computed from FlowFile attributes, for each incoming FlowFile and determines if the cached value has already been seen. "
-        + "If so, routes the FlowFile to 'duplicate' with an attribute named 'original.identifier' that specifies the original FlowFile's"
+        + "If so, routes the FlowFile to 'duplicate' with an attribute named 'original.identifier' that specifies the original FlowFile's "
         + "\"description\", which is specified in the <FlowFile Description> property. If the FlowFile is not determined to be a duplicate, the Processor "
         + "routes the FlowFile to 'non-duplicate'")
 @WritesAttribute(attribute = "original.flowfile.description", description = "All FlowFiles routed to the duplicate relationship will have "
@@ -98,6 +101,16 @@ public class DetectDuplicate extends AbstractProcessor {
             .addValidator(StandardValidators.TIME_PERIOD_VALIDATOR)
             .build();
 
+    public static final PropertyDescriptor CACHE_IDENTIFIER = new PropertyDescriptor.Builder()
+            .name("Cache The Entry Identifier")
+            .description("When true this cause the processor to check for duplicates and cache the Entry Identifier. When false, "
+                    + "the processor would only check for duplicates and not cache the Entry Identifier, requiring another "
+                    + "processor to add identifiers to the distributed cache.")
+            .required(false)
+            .allowableValues("true","false")
+            .defaultValue("true")
+            .build();
+
     public static final Relationship REL_DUPLICATE = new Relationship.Builder()
             .name("duplicate")
             .description("If a FlowFile has been detected to be a duplicate, it will be routed to this relationship")
@@ -131,6 +144,7 @@ public class DetectDuplicate extends AbstractProcessor {
         descriptors.add(FLOWFILE_DESCRIPTION);
         descriptors.add(AGE_OFF_DURATION);
         descriptors.add(DISTRIBUTED_CACHE_SERVICE);
+        descriptors.add(CACHE_IDENTIFIER);
         return descriptors;
     }
 
@@ -146,7 +160,7 @@ public class DetectDuplicate extends AbstractProcessor {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
         final String cacheKey = context.getProperty(CACHE_ENTRY_IDENTIFIER).evaluateAttributeExpressions(flowFile).getValue();
         if (StringUtils.isBlank(cacheKey)) {
             logger.error("FlowFile {} has no attribute for given Cache Entry Identifier", new Object[]{flowFile});
@@ -161,14 +175,28 @@ public class DetectDuplicate extends AbstractProcessor {
         try {
             final String flowFileDescription = context.getProperty(FLOWFILE_DESCRIPTION).evaluateAttributeExpressions(flowFile).getValue();
             final CacheValue cacheValue = new CacheValue(flowFileDescription, now);
-            final CacheValue originalCacheValue = cache.getAndPutIfAbsent(cacheKey, cacheValue, keySerializer, valueSerializer, valueDeserializer);
+            final CacheValue originalCacheValue;
+
+            final boolean shouldCacheIdentifier = context.getProperty(CACHE_IDENTIFIER).asBoolean();
+            if (shouldCacheIdentifier) {
+                originalCacheValue = cache.getAndPutIfAbsent(cacheKey, cacheValue, keySerializer, valueSerializer, valueDeserializer);
+            } else {
+                originalCacheValue = cache.get(cacheKey, keySerializer, valueDeserializer);
+            }
+
             boolean duplicate = originalCacheValue != null;
             if (duplicate && durationMS != null && (now >= originalCacheValue.getEntryTimeMS() + durationMS)) {
                 boolean status = cache.remove(cacheKey, keySerializer);
                 logger.debug("Removal of expired cached entry with key {} returned {}", new Object[]{cacheKey, status});
-                // this should typically result in duplicate being false...but, better safe than sorry
-                duplicate = !cache.putIfAbsent(cacheKey, cacheValue, keySerializer, valueSerializer);
+
+                // both should typically result in duplicate being false...but, better safe than sorry
+                if (shouldCacheIdentifier) {
+                    duplicate = !cache.putIfAbsent(cacheKey, cacheValue, keySerializer, valueSerializer);
+                } else {
+                    duplicate = cache.containsKey(cacheKey, keySerializer);
+                }
             }
+
             if (duplicate) {
                 session.getProvenanceReporter().route(flowFile, REL_DUPLICATE, "Duplicate of: " + ORIGINAL_DESCRIPTION_ATTRIBUTE_NAME);
                 String originalFlowFileDescription = originalCacheValue.getDescription();

@@ -19,6 +19,8 @@
 package org.apache.nifi.processors.solr;
 
 import org.apache.nifi.annotation.behavior.DynamicProperty;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
@@ -30,7 +32,6 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.InputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.util.ObjectHolder;
 import org.apache.nifi.util.StopWatch;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.request.ContentStreamUpdateRequest;
@@ -54,8 +55,10 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Tags({"Apache", "Solr", "Put", "Send"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Sends the contents of a FlowFile as a ContentStream to Solr")
 @DynamicProperty(name="A Solr request parameter name", value="A Solr request parameter value",
         description="These parameters will be passed to Solr on the request")
@@ -85,6 +88,7 @@ public class PutSolrContentStream extends SolrProcessor {
             .required(false)
             .addValidator(StandardValidators.POSITIVE_LONG_VALIDATOR)
             .expressionLanguageSupported(true)
+            .defaultValue("5000")
             .build();
 
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
@@ -120,6 +124,16 @@ public class PutSolrContentStream extends SolrProcessor {
         descriptors.add(CONTENT_STREAM_PATH);
         descriptors.add(CONTENT_TYPE);
         descriptors.add(COMMIT_WITHIN);
+        descriptors.add(JAAS_CLIENT_APP_NAME);
+        descriptors.add(BASIC_USERNAME);
+        descriptors.add(BASIC_PASSWORD);
+        descriptors.add(SSL_CONTEXT_SERVICE);
+        descriptors.add(SOLR_SOCKET_TIMEOUT);
+        descriptors.add(SOLR_CONNECTION_TIMEOUT);
+        descriptors.add(SOLR_MAX_CONNECTIONS);
+        descriptors.add(SOLR_MAX_CONNECTIONS_PER_HOST);
+        descriptors.add(ZK_CLIENT_TIMEOUT);
+        descriptors.add(ZK_CONNECTION_TIMEOUT);
         this.descriptors = Collections.unmodifiableList(descriptors);
 
         final Set<Relationship> relationships = new HashSet<>();
@@ -157,8 +171,8 @@ public class PutSolrContentStream extends SolrProcessor {
             return;
         }
 
-        final ObjectHolder<Exception> error = new ObjectHolder<>(null);
-        final ObjectHolder<Exception> connectionError = new ObjectHolder<>(null);
+        final AtomicReference<Exception> error = new AtomicReference<>(null);
+        final AtomicReference<Exception> connectionError = new AtomicReference<>(null);
 
         final boolean isSolrCloud = SOLR_TYPE_CLOUD.equals(context.getProperty(SOLR_TYPE).getValue());
         final String collection = context.getProperty(COLLECTION).evaluateAttributeExpressions(flowFile).getValue();
@@ -192,6 +206,11 @@ public class PutSolrContentStream extends SolrProcessor {
 
                 if (commitWithin != null && commitWithin > 0) {
                     request.setParam(COMMIT_WITHIN_PARAM_NAME, commitWithin.toString());
+                }
+
+                // if a username and password were provided then pass them for basic auth
+                if (isBasicAuthEnabled()) {
+                    request.setBasicAuthCredentials(getUsername(), getPassword());
                 }
 
                 try (final BufferedInputStream bufferedIn = new BufferedInputStream(in)) {
@@ -236,7 +255,7 @@ public class PutSolrContentStream extends SolrProcessor {
             session.transfer(flowFile, REL_CONNECTION_FAILURE);
         } else {
             StringBuilder transitUri = new StringBuilder("solr://");
-            transitUri.append(context.getProperty(SOLR_LOCATION).getValue());
+            transitUri.append(getSolrLocation());
             if (isSolrCloud) {
                 transitUri.append(":").append(collection);
             }

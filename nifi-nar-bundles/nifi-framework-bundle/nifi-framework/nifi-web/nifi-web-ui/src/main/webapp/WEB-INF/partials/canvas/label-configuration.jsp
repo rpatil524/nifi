@@ -15,24 +15,19 @@
   limitations under the License.
 --%>
 <%@ page contentType="text/html" pageEncoding="UTF-8" session="false" %>
-<div id="label-configuration" class="dialog">
-    <div>
-        <div class="setting" style="margin-top: 5px;">
+<div id="label-configuration" class="hidden medium-dialog">
+    <div id="label-configuration-contents" class="dialog-content">
+        <div class="setting">
             <div class="setting-name">Label Value</div>
             <div class="setting-field">
                 <textarea cols="30" rows="4" id="label-value" class="setting-input"></textarea>
             </div>
         </div>
-        <div class="setting" style="margin-top: 5px; margin-bottom: 40px;">
+        <div class="setting">
             <div class="setting-name">Font Size</div>
             <div class="setting-field">
                 <div id="label-font-size"></div>
             </div>
         </div>
-    </div>
-    <div id="label-configuration-button-container">
-        <div id="label-configuration-apply" class="button button-normal">Apply</div>
-        <div id="label-configuration-cancel" class="button button-normal">Cancel</div>
-        <div class="clear"></div>
     </div>
 </div>

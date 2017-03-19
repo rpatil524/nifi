@@ -16,47 +16,71 @@
  */
 package org.apache.nifi.processors.standard;
 
-import com.jayway.jsonpath.DocumentContext;
-import com.jayway.jsonpath.InvalidJsonException;
-import com.jayway.jsonpath.JsonPath;
-import com.jayway.jsonpath.PathNotFoundException;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.annotation.behavior.EventDriven;
-import org.apache.nifi.annotation.behavior.SideEffectFree;
-import org.apache.nifi.annotation.behavior.SupportsBatching;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.components.ValidationContext;
-import org.apache.nifi.components.ValidationResult;
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.ProcessorInitializationContext;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.io.OutputStreamCallback;
-import org.apache.nifi.processor.util.StandardValidators;
-
-import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.SideEffectFree;
+import org.apache.nifi.annotation.behavior.SupportsBatching;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.behavior.WritesAttributes;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.annotation.lifecycle.OnScheduled;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.ValidationContext;
+import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.flowfile.FlowFile;
+import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.ProcessorInitializationContext;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.util.StandardValidators;
+
+import com.jayway.jsonpath.DocumentContext;
+import com.jayway.jsonpath.InvalidJsonException;
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.PathNotFoundException;
+
+import static org.apache.nifi.flowfile.attributes.FragmentAttributes.FRAGMENT_COUNT;
+import static org.apache.nifi.flowfile.attributes.FragmentAttributes.FRAGMENT_ID;
+import static org.apache.nifi.flowfile.attributes.FragmentAttributes.FRAGMENT_INDEX;
+import static org.apache.nifi.flowfile.attributes.FragmentAttributes.SEGMENT_ORIGINAL_FILENAME;
+import static org.apache.nifi.flowfile.attributes.FragmentAttributes.copyAttributesToOriginal;
 
 @EventDriven
 @SideEffectFree
 @SupportsBatching
 @Tags({"json", "split", "jsonpath"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Splits a JSON File into multiple, separate FlowFiles for an array element specified by a JsonPath expression. "
         + "Each generated FlowFile is comprised of an element of the specified array and transferred to relationship 'split,' "
         + "with the original file transferred to the 'original' relationship. If the specified JsonPath is not found or "
         + "does not evaluate to an array element, the original file is routed to 'failure' and no files are generated.")
+@WritesAttributes({
+        @WritesAttribute(attribute = "fragment.identifier",
+                description = "All split FlowFiles produced from the same parent FlowFile will have the same randomly generated UUID added for this attribute"),
+        @WritesAttribute(attribute = "fragment.index",
+                description = "A one-up number that indicates the ordering of the split FlowFiles that were created from a single parent FlowFile"),
+        @WritesAttribute(attribute = "fragment.count",
+                description = "The number of split FlowFiles generated from the parent FlowFile"),
+        @WritesAttribute(attribute = "segment.original.filename ", description = "The filename of the parent FlowFile")
+})
+
 public class SplitJson extends AbstractJsonPathProcessor {
 
     public static final PropertyDescriptor ARRAY_JSON_PATH_EXPRESSION = new PropertyDescriptor.Builder()
@@ -85,6 +109,7 @@ public class SplitJson extends AbstractJsonPathProcessor {
     private Set<Relationship> relationships;
 
     private final AtomicReference<JsonPath> JSON_PATH_REF = new AtomicReference<>();
+    private volatile String nullDefaultValue;
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
@@ -140,16 +165,21 @@ public class SplitJson extends AbstractJsonPathProcessor {
         return Collections.singleton(validator.validate(ARRAY_JSON_PATH_EXPRESSION.getName(), value, validationContext));
     }
 
+    @OnScheduled
+    public void onScheduled(ProcessContext processContext) {
+        nullDefaultValue = NULL_REPRESENTATION_MAP.get(processContext.getProperty(NULL_VALUE_DEFAULT_REPRESENTATION).getValue());
+    }
+
     @Override
     public void onTrigger(final ProcessContext processContext, final ProcessSession processSession) {
-        final FlowFile original = processSession.get();
+        FlowFile original = processSession.get();
         if (original == null) {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
-        DocumentContext documentContext = null;
+        DocumentContext documentContext;
         try {
             documentContext = validateAndEstablishJsonContext(processSession, original);
         } catch (InvalidJsonException e) {
@@ -159,10 +189,6 @@ public class SplitJson extends AbstractJsonPathProcessor {
         }
 
         final JsonPath jsonPath = JSON_PATH_REF.get();
-        String representationOption = processContext.getProperty(NULL_VALUE_DEFAULT_REPRESENTATION).getValue();
-        final String nullDefaultValue = NULL_REPRESENTATION_MAP.get(representationOption);
-
-        final List<FlowFile> segments = new ArrayList<>();
 
         Object jsonPathResult;
         try {
@@ -181,20 +207,26 @@ public class SplitJson extends AbstractJsonPathProcessor {
 
         List resultList = (List) jsonPathResult;
 
-        for (final Object resultSegment : resultList) {
+        Map<String, String> attributes = new HashMap<>();
+        final String fragmentId = UUID.randomUUID().toString();
+        attributes.put(FRAGMENT_ID.key(), fragmentId);
+        attributes.put(FRAGMENT_COUNT.key(), Integer.toString(resultList.size()));
+
+        for (int i = 0; i < resultList.size(); i++) {
+            Object resultSegment = resultList.get(i);
             FlowFile split = processSession.create(original);
-            split = processSession.write(split, new OutputStreamCallback() {
-                @Override
-                public void process(OutputStream out) throws IOException {
-                    String resultSegmentContent = getResultRepresentation(resultSegment, nullDefaultValue);
-                    out.write(resultSegmentContent.getBytes(StandardCharsets.UTF_8));
-                }
-            });
-            segments.add(split);
+            split = processSession.write(split, (out) -> {
+                        String resultSegmentContent = getResultRepresentation(resultSegment, nullDefaultValue);
+                        out.write(resultSegmentContent.getBytes(StandardCharsets.UTF_8));
+                    }
+            );
+            attributes.put(SEGMENT_ORIGINAL_FILENAME.key(), split.getAttribute(CoreAttributes.FILENAME.key()));
+            attributes.put(FRAGMENT_INDEX.key(), Integer.toString(i));
+            processSession.transfer(processSession.putAllAttributes(split, attributes), REL_SPLIT);
         }
 
-        processSession.transfer(segments, REL_SPLIT);
+        original = copyAttributesToOriginal(processSession, original, fragmentId, resultList.size());
         processSession.transfer(original, REL_ORIGINAL);
-        logger.info("Split {} into {} FlowFiles", new Object[]{original, segments.size()});
+        logger.info("Split {} into {} FlowFiles", new Object[]{original, resultList.size()});
     }
 }

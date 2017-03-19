@@ -16,21 +16,28 @@
  */
 package org.apache.nifi.remote.client.socket;
 
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.HashMap;
-import java.util.Map;
-
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.Output;
 import org.apache.nifi.remote.Transaction;
 import org.apache.nifi.remote.TransferDirection;
 import org.apache.nifi.remote.client.SiteToSiteClient;
+import org.apache.nifi.remote.client.SiteToSiteClientConfig;
 import org.apache.nifi.remote.protocol.DataPacket;
 import org.apache.nifi.remote.util.StandardDataPacket;
+import org.apache.nifi.stream.io.ByteArrayOutputStream;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 public class TestSiteToSiteClient {
 
@@ -98,6 +105,48 @@ public class TestSiteToSiteClient {
         } finally {
             client.close();
         }
+    }
+
+    @Test
+    public void testSerialization() {
+        final SiteToSiteClientConfig clientConfig = new SiteToSiteClient.Builder()
+                .url("http://localhost:8080/nifi")
+                .portName("input")
+                .buildConfig();
+
+        final Kryo kryo = new Kryo();
+
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        final Output output = new Output(out);
+
+        try {
+            kryo.writeObject(output, clientConfig);
+        } finally {
+            output.close();
+        }
+
+        final ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+        final Input input = new Input(in);
+
+        try {
+            SiteToSiteClientConfig clientConfig2 = kryo.readObject(input, SiteToSiteClient.StandardSiteToSiteClientConfig.class);
+            Assert.assertEquals(clientConfig.getUrls(), clientConfig2.getUrls());
+        } finally {
+            input.close();
+        }
+    }
+
+    @Test
+    public void testGetUrlBackwardCompatibility() {
+        final Set<String> urls = new LinkedHashSet<>();
+        urls.add("http://node1:8080/nifi");
+        urls.add("http://node2:8080/nifi");
+        final SiteToSiteClientConfig config = new SiteToSiteClient.Builder()
+                .urls(urls)
+                .buildConfig();
+
+        Assert.assertEquals("http://node1:8080/nifi", config.getUrl());
+        Assert.assertEquals(urls, config.getUrls());
     }
 
 }

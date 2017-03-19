@@ -16,23 +16,26 @@
  */
 package org.apache.nifi.connectable;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Set;
-
-import org.apache.nifi.controller.FlowFileQueue;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.controller.queue.FlowFileQueue;
 import org.apache.nifi.controller.repository.FlowFileRecord;
 import org.apache.nifi.groups.ProcessGroup;
 import org.apache.nifi.processor.FlowFileFilter;
 import org.apache.nifi.processor.Relationship;
 
-public interface Connection {
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+
+public interface Connection extends Authorizable {
 
     void enqueue(FlowFileRecord flowFile);
 
     void enqueue(Collection<FlowFileRecord> flowFiles);
 
     Connectable getDestination();
+
+    Authorizable getDestinationAuthorizable();
 
     Collection<Relationship> getRelationships();
 
@@ -57,6 +60,8 @@ public interface Connection {
     void setZIndex(long zIndex);
 
     Connectable getSource();
+
+    Authorizable getSourceAuthorizable();
 
     void setRelationships(Collection<Relationship> newRelationships);
 

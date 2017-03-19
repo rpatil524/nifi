@@ -17,6 +17,7 @@
 package org.apache.nifi.cluster.spring;
 
 import java.io.File;
+
 import org.apache.nifi.cluster.firewall.impl.FileBasedClusterNodeFirewall;
 import org.apache.nifi.util.NiFiProperties;
 import org.springframework.beans.factory.FactoryBean;
@@ -33,7 +34,7 @@ public class FileBasedClusterNodeFirewallFactoryBean implements FactoryBean {
     @Override
     public Object getObject() throws Exception {
         if (firewall == null) {
-            final File config = properties.getClusterManagerNodeFirewallFile();
+            final File config = properties.getClusterNodeFirewallFile();
             final File restoreDirectory = properties.getRestoreDirectory();
             if (config != null) {
                 firewall = new FileBasedClusterNodeFirewall(config, restoreDirectory);

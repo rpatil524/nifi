@@ -16,6 +16,9 @@
  */
 package org.apache.nifi.provenance.serialization;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -23,7 +26,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.zip.GZIPInputStream;
 
+import org.apache.nifi.provenance.ByteArraySchemaRecordReader;
+import org.apache.nifi.provenance.ByteArraySchemaRecordWriter;
+import org.apache.nifi.provenance.EventIdFirstSchemaRecordReader;
+import org.apache.nifi.provenance.EventIdFirstSchemaRecordWriter;
 import org.apache.nifi.provenance.StandardRecordReader;
 import org.apache.nifi.provenance.lucene.LuceneUtil;
 import org.apache.nifi.provenance.toc.StandardTocReader;
@@ -71,10 +79,10 @@ public class RecordReaders {
             String filename = file.getName();
             openStream: while ( fis == null ) {
                 final File dir = file.getParentFile();
-                final String baseName = LuceneUtil.substringBefore(file.getName(), ".");
+                final String baseName = LuceneUtil.substringBefore(file.getName(), ".prov");
 
-                // depending on which rollover actions have occurred, we could have 3 possibilities for the
-                // filename that we need. The majority of the time, we will use the extension ".prov.indexed.gz"
+                // depending on which rollover actions have occurred, we could have 2 possibilities for the
+                // filename that we need. The majority of the time, we will use the extension ".prov.gz"
                 // because most often we are compressing on rollover and most often we have already finished
                 // compressing by the time that we are querying the data.
                 for ( final String extension : new String[] {".prov.gz", ".prov"} ) {
@@ -101,11 +109,48 @@ public class RecordReaders {
             }
 
             final File tocFile = TocUtil.getTocFile(file);
-            if ( tocFile.exists() ) {
-                final TocReader tocReader = new StandardTocReader(tocFile);
-                return new StandardRecordReader(fis, filename, tocReader, maxAttributeChars);
-            } else {
-                return new StandardRecordReader(fis, filename, maxAttributeChars);
+
+            final InputStream bufferedInStream = new BufferedInputStream(fis);
+            final String serializationName;
+            try {
+                bufferedInStream.mark(4096);
+                final InputStream in = filename.endsWith(".gz") ? new GZIPInputStream(bufferedInStream) : bufferedInStream;
+                final DataInputStream dis = new DataInputStream(in);
+                serializationName = dis.readUTF();
+                bufferedInStream.reset();
+            } catch (final EOFException eof) {
+                fis.close();
+                return new EmptyRecordReader();
+            }
+
+            switch (serializationName) {
+                case StandardRecordReader.SERIALIZATION_NAME: {
+                    if (tocFile.exists()) {
+                        final TocReader tocReader = new StandardTocReader(tocFile);
+                        return new StandardRecordReader(bufferedInStream, filename, tocReader, maxAttributeChars);
+                    } else {
+                        return new StandardRecordReader(bufferedInStream, filename, maxAttributeChars);
+                    }
+                }
+                case ByteArraySchemaRecordWriter.SERIALIZATION_NAME: {
+                    if (tocFile.exists()) {
+                        final TocReader tocReader = new StandardTocReader(tocFile);
+                        return new ByteArraySchemaRecordReader(bufferedInStream, filename, tocReader, maxAttributeChars);
+                    } else {
+                        return new ByteArraySchemaRecordReader(bufferedInStream, filename, maxAttributeChars);
+                    }
+                }
+                case EventIdFirstSchemaRecordWriter.SERIALIZATION_NAME: {
+                    if (!tocFile.exists()) {
+                        throw new FileNotFoundException("Cannot create TOC Reader because the file " + tocFile + " does not exist");
+                    }
+
+                    final TocReader tocReader = new StandardTocReader(tocFile);
+                    return new EventIdFirstSchemaRecordReader(bufferedInStream, filename, tocReader, maxAttributeChars);
+                }
+                default: {
+                    throw new IOException("Unable to read data from file " + file + " because the file was written using an unknown Serializer: " + serializationName);
+                }
             }
         } catch (final IOException ioe) {
             if ( fis != null ) {

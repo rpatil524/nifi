@@ -28,10 +28,14 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.nifi.controller.queue.FlowFileQueue;
 import org.apache.nifi.controller.repository.FlowFileRecord;
+import org.apache.nifi.controller.repository.FlowFileRepository;
+import org.apache.nifi.controller.repository.SwapContents;
+import org.apache.nifi.controller.repository.SwapManagerInitializationContext;
 import org.apache.nifi.controller.repository.claim.ResourceClaim;
 import org.apache.nifi.controller.repository.claim.ResourceClaimManager;
-
+import org.apache.nifi.events.EventReporter;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -39,7 +43,6 @@ public class TestFileSystemSwapManager {
 
     @Test
     public void testBackwardCompatible() throws IOException {
-        System.setProperty("nifi.properties.file.path", "src/test/resources/nifi.properties");
 
         try (final InputStream fis = new FileInputStream(new File("src/test/resources/old-swap-file.swap"));
                 final DataInputStream in = new DataInputStream(new BufferedInputStream(fis))) {
@@ -47,7 +50,10 @@ public class TestFileSystemSwapManager {
             final FlowFileQueue flowFileQueue = Mockito.mock(FlowFileQueue.class);
             Mockito.when(flowFileQueue.getIdentifier()).thenReturn("87bb99fe-412c-49f6-a441-d1b0af4e20b4");
 
-            final List<FlowFileRecord> records = FileSystemSwapManager.deserializeFlowFiles(in, flowFileQueue, new NopResourceClaimManager());
+            final FileSystemSwapManager swapManager = createSwapManager();
+            final SwapContents swapContents = swapManager.peek("src/test/resources/old-swap-file.swap", flowFileQueue);
+
+            final List<FlowFileRecord> records = swapContents.getFlowFiles();
             assertEquals(10000, records.size());
 
             for (final FlowFileRecord record : records) {
@@ -57,10 +63,39 @@ public class TestFileSystemSwapManager {
         }
     }
 
+
+    private FileSystemSwapManager createSwapManager() {
+        final FileSystemSwapManager swapManager = new FileSystemSwapManager();
+        final ResourceClaimManager resourceClaimManager = new NopResourceClaimManager();
+        final FlowFileRepository flowfileRepo = Mockito.mock(FlowFileRepository.class);
+        swapManager.initialize(new SwapManagerInitializationContext() {
+            @Override
+            public ResourceClaimManager getResourceClaimManager() {
+                return resourceClaimManager;
+            }
+
+            @Override
+            public FlowFileRepository getFlowFileRepository() {
+                return flowfileRepo;
+            }
+
+            @Override
+            public EventReporter getEventReporter() {
+                return EventReporter.NO_OP;
+            }
+        });
+
+        return swapManager;
+    }
+
     public class NopResourceClaimManager implements ResourceClaimManager {
+        @Override
+        public ResourceClaim newResourceClaim(String container, String section, String id, boolean lossTolerant, boolean writable) {
+            return null;
+        }
 
         @Override
-        public ResourceClaim newResourceClaim(String container, String section, String id, boolean lossTolerant) {
+        public ResourceClaim getResourceClaim(String container, String section, String id) {
             return null;
         }
 
@@ -99,5 +134,10 @@ public class TestFileSystemSwapManager {
         @Override
         public void purge() {
         }
+
+        @Override
+        public void freeze(ResourceClaim claim) {
+        }
     }
+
 }

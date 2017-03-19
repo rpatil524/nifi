@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
@@ -34,7 +36,7 @@ import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.components.Validator;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
@@ -48,6 +50,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 
 @Tags({ "mongodb", "read", "get" })
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
 @CapabilityDescription("Creates FlowFiles from documents in MongoDB")
 public class GetMongo extends AbstractMongoProcessor {
     public static final Validator DOCUMENT_VALIDATOR = new Validator() {
@@ -68,7 +71,7 @@ public class GetMongo extends AbstractMongoProcessor {
 
     static final PropertyDescriptor QUERY = new PropertyDescriptor.Builder()
         .name("Query")
-        .description("The selection criteria; must be a valid BSON document; if omitted the entire collection will be queried")
+        .description("The selection criteria; must be a valid MongoDB Extended JSON format; if omitted the entire collection will be queried")
         .required(false)
         .addValidator(DOCUMENT_VALIDATOR)
         .build();
@@ -97,40 +100,39 @@ public class GetMongo extends AbstractMongoProcessor {
         .addValidator(StandardValidators.POSITIVE_INTEGER_VALIDATOR)
         .build();
 
-    private final List<PropertyDescriptor> descriptors;
+    private final static Set<Relationship> relationships;
+    private final static List<PropertyDescriptor> propertyDescriptors;
 
-    private final Set<Relationship> relationships;
+    static {
+        List<PropertyDescriptor> _propertyDescriptors = new ArrayList<>();
+        _propertyDescriptors.addAll(descriptors);
+        _propertyDescriptors.add(QUERY);
+        _propertyDescriptors.add(PROJECTION);
+        _propertyDescriptors.add(SORT);
+        _propertyDescriptors.add(LIMIT);
+        _propertyDescriptors.add(BATCH_SIZE);
+        _propertyDescriptors.add(SSL_CONTEXT_SERVICE);
+        _propertyDescriptors.add(CLIENT_AUTH);
+        propertyDescriptors = Collections.unmodifiableList(_propertyDescriptors);
 
-    public GetMongo() {
-        final List<PropertyDescriptor> descriptors = new ArrayList<>();
-        descriptors.add(URI);
-        descriptors.add(DATABASE_NAME);
-        descriptors.add(COLLECTION_NAME);
-        descriptors.add(QUERY);
-        descriptors.add(PROJECTION);
-        descriptors.add(SORT);
-        descriptors.add(LIMIT);
-        descriptors.add(BATCH_SIZE);
-        this.descriptors = Collections.unmodifiableList(descriptors);
-
-        final Set<Relationship> relationships = new HashSet<>();
-        relationships.add(REL_SUCCESS);
-        this.relationships = Collections.unmodifiableSet(relationships);
+        final Set<Relationship> _relationships = new HashSet<>();
+        _relationships.add(REL_SUCCESS);
+        relationships = Collections.unmodifiableSet(_relationships);
     }
 
     @Override
     public Set<Relationship> getRelationships() {
-        return this.relationships;
+        return relationships;
     }
 
     @Override
     public final List<PropertyDescriptor> getSupportedPropertyDescriptors() {
-        return descriptors;
+        return propertyDescriptors;
     }
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
         final Document query = context.getProperty(QUERY).isSet() ? Document.parse(context.getProperty(QUERY).getValue()) : null;
         final Document projection = context.getProperty(PROJECTION).isSet() ? Document.parse(context.getProperty(PROJECTION).getValue()) : null;

@@ -29,7 +29,7 @@ of the methods in the API, as this guide is intended to supplement the JavaDocs 
 This guide also assumes that the reader is familiar with Java 7 and Apache Maven.
 
 This guide is written by developers for developers. It is expected that before reading this
-guide, you have a basic understanding of NiFi and the concepts of dataflow. If not, please see the link:overview.html[NiFi Overview] 
+guide, you have a basic understanding of NiFi and the concepts of dataflow. If not, please see the link:overview.html[NiFi Overview]
 and the link:user-guide.html[NiFi User Guide] to familiarize yourself with the concepts of NiFi.
 
 
@@ -152,7 +152,7 @@ The ProcessSession, often referred to as simply a "session," provides
 a mechanism by which FlowFiles can be created, destroyed, examined, cloned, and transferred to other
 Processors. Additionally, a ProcessSession provides mechanism for creating modified versions of
 FlowFiles, by adding or removing attributes, or by modifying the FlowFile's content. The ProcessSession
-also exposes a mechanism for emitting provenance events that provide for the ability to track the
+also exposes a mechanism for emitting <<provenance_events>> that provide for the ability to track the
 lineage and history of a FlowFile. After operations are performed on one or more FlowFiles, a
 ProcessSession can be either committed or rolled back.
 
@@ -181,12 +181,13 @@ the `build` method.
 
 [[validator]]
 ==== Validator
-A PropertyDescriptor may specify one or more Validators that can be
+A PropertyDescriptor MUST specify one or more Validators that can be
 used to ensure that the user-entered value
 for a property is valid. If a Validator indicates that a property
 value is invalid, the Component will not be
-able to be run or used until the property becomes valid.
-
+able to be run or used until the property becomes valid. If a
+Validator is not specified, the Component will be assumed invalid and
+NiFi will report that the property is not supported.
 
 [[validation_context]]
 ==== ValidationContext
@@ -215,6 +216,13 @@ class, calling the appropriate methods
 to fill in the details of the Relationship, and finally calling the
 `build` method.
 
+[[supporting_api_state_manager]]
+==== StateManager
+The StateManager provides Processors, Reporting Tasks, and Controller Services a mechanism
+for easily storing and retrieving state. The API is similar to that of ConcurrentHashMap
+but requires a Scope for each operation. The Scope indicates whether the state is to be
+retrieved/stored locally or in a cluster-wide manner. For more information, see the
+<<state_manager>> section.
 
 [[processor_initialization_context]]
 ==== ProcessorInitializationContext
@@ -224,13 +232,13 @@ This object exposes configuration to the Processor that will not
 change throughout the life of the Processor,
 such as the unique identifier of the Processor.
 
-[[ProcessorLog]]
-==== ProcessorLog
+[[ComponentLog]]
+==== ComponentLog
 Processors are encouraged to perform their logging via the
-`ProcessorLog` interface, rather than obtaining
+`ComponentLog` interface, rather than obtaining
 a direct instance of a third-party logger. This is because logging via
-the ProcessorLog allows the framework
-to render log messages that exceed s a configurable severity level to
+the ComponentLog allows the framework
+to render log messages that exceeds a configurable severity level to
 the User Interface, allowing those who
 monitor the dataflow to be notified when important events occur.
 Additionally, it provides a consistent logging
@@ -259,7 +267,7 @@ When a Processor is created, before any other methods are invoked, the
 AbstractProcessor will be invoked. The method takes a single argument,
 which is of type
 `ProcessorInitializationContext`. The context object supplies the
-Processor with a ProcessorLog,
+Processor with a ComponentLog,
 the Processor's unique identifier, and a ControllerServiceLookup that
 can be used to interact with the
 configured ControllerServices. Each of these objects is stored by the
@@ -557,19 +565,97 @@ for instance, they should not be
 relied upon for critical business logic.
 
 
+[[restricted]]
+=== Restricted
+
+A Restricted component is one that can be used to execute arbitrary unsanitized code provided by the operator
+through the NiFi REST API/UI or can be used to obtain or alter data on the NiFi host system using the NiFi OS
+credentials. These components could be used by an otherwise authorized NiFi user to go beyond the intended use of
+the application, escalate privilege, or could expose data about the internals of the NiFi process or the host
+system. All of these capabilities should be considered privileged, and admins should be aware of these
+capabilities and explicitly enable them for a subset of trusted users.
+
+A Processor, Controller Service, or Reporting Task can be marked with the @Restricted annotation. This
+will result in the component being treated as restricted and will require a user to be explicitly added to the
+list of users who can access restricted components. Once a user is permitted to access restricted components,
+they will be allowed to create and modify those components assuming all other permissions are permitted.
+Without access to restricted components, a user will be still be aware these types of components exist but will
+be unable to create or modify them even with otherwise sufficient permissions.
+
+[[state_manager]]
+=== State Manager
+
+From the ProcessContext, ReportingContext, and ControllerServiceInitializationContext, components are
+able to call the `getStateManager()` method. This State Manager is responsible for providing a simple API
+for storing and retrieving state. This mechanism is intended to provide developers with the ability to
+very easily store a set of key/value pairs, retrieve those values, and update them atomically. The state
+can be stored local to the node or across all nodes in a cluster. It is important to note, however, that
+this mechanism is intended only to provide a mechanism for storing very 'simple' state. As such, the API
+simply allows a `Map<String, String>` to be stored and retrieved and for the entire Map to be atomically
+replaced. Moreover, the only implementation that is currently supported for storing cluster-wide state is
+backed by ZooKeeper. As such, the entire State Map must be less than 1 MB in size, after being serialized.
+Attempting to store more than this will result in an Exception being thrown. If the interactions required
+by the Processor for managing state are more complex than this (e.g., large amounts of data must be stored
+and retrieved, or individual keys must be stored and fetched individually) than a different mechanism should
+be used (e.g., communicating with an external database).
+
+
+[[state_scope]]
+==== Scope
+When communicating with the State Manager, all method calls require that a Scope be provided. This Scope will
+either be `Scope.LOCAL` or `Scope.CLUSTER`. If NiFi is run in a cluster, this Scope provides important information
+to the framework about how the operation should occur.
+
+If state as stored using `Scope.CLUSTER`, then all nodes in the cluster will be communicating with the same
+state storage mechanism. If state is stored and retrieved using `Scope.LOCAL`, then each node will see a different
+representation of the state.
+
+It is also worth noting that if NiFi is configured to run as a standalone instance, rather than running in a cluster,
+a scope of `Scope.LOCAL` is always used. This is done in order to allow the developer of a NiFi component to write the code
+in one consistent way, without worrying about whether or not the NiFi instance is clustered. The developer should instead assume
+that the instance is clustered and write the code accordingly.
+
+
+==== Storing and Retrieving State
+
+State is stored using the StateManager's `getState`, `setState`, `replace`, and `clear` methods. All of these methods
+require that a Scope be provided. It should be noted that the state that is stored with the Local scope is entirely different
+than state stored with a Cluster scope. If a Processor stores a value with the key of _My Key_ using the `Scope.CLUSTER` scope,
+and then attempts to retrieve the value using the `Scope.LOCAL` scope, the value retrieved will be `null` (unless a value was
+also stored with the same key using the `Scope.CLUSTER` scope). Each Processor's state, is stored in isolation from other
+Processors' state.
+
+It follows, then, that two Processors cannot share the same state. There are, however, some circumstances in which it is very
+necessary to share state between two Processors of different types, or two Processors of the same type. This can be accomplished
+by using a Controller Service. By storing and retrieving state from a Controller Service, multiple Processors can use the same
+Controller Service and the state can be exposed via the Controller Service's API.
+
+
+==== Unit Tests
+NiFi's Mock Framework provides an extensive collection of tools to perform unit testing of Processors. Processor unit tests typically
+begin with the `TestRunner` class. As a result, the `TestRunner` class contains a `getStateManager` method of its own. The StateManager
+that is returned, however, is of a specific type: `MockStateManager`. This implementation provides several methods in addition to those
+defined by the `StateManager` interface, that help developers to more easily develop unit tests.
+
+First, the `MockStateManager` implements the `StateManager` interface, so all of the state can be examined from within a unit test.
+Additionally, the `MockStateManager` exposes a handful of `assert*` methods to perform assertions that the State is set as expected.
+The `MockStateManager` also provides the ability to indicate that the unit test should immediately fail if state is updated for a particular
+`Scope`.
+
+
 
 
 === Reporting Processor Activity
 
 Processors are responsible for reporting their activity so that users
 are able to understand what happens
-to their data. Processors should log events via the ProcessorLog,
+to their data. Processors should log events via the ComponentLog,
 which is accessible via the InitializationContext
 or by calling the `getLogger` method of `AbstractProcessor`.
 
 Additionally, Processors should use the `ProvenanceReporter`
 interface, obtained via the ProcessSession's
-`getProvenanceReporter` method. The ProvenanceReoprter should be used
+`getProvenanceReporter` method. The ProvenanceReporter should be used
 to indicate any time that content is
 received from an external source or sent to an external location. The
 ProvenanceReporter also has methods for
@@ -594,7 +680,7 @@ ATTRIBUTES_MODIFIED event, the framework will emit a CONTENT_MODIFIED
 event. The framework will not emit an ATTRIBUTES_MODIFIED event if any
 other event is emitted for that FlowFile (either by the
 Processor or the framework). This is due to the fact that all
-Provenance Events know about the attributes of the FlowFile before the
+<<provenance_events>> know about the attributes of the FlowFile before the
 event occurred as well as those attributes that occurred as a result
 of the processing of that FlowFile, and as a result the
 ATTRIBUTES_MODIFIED is generally considered redundant and would result
@@ -640,11 +726,11 @@ Each of those values can also be given a description:
 
 [source,java]
 ----
-public static final AllowableValue EXTENSIVE = new AllowableValue("Extensive", "Extensive", 
+public static final AllowableValue EXTENSIVE = new AllowableValue("Extensive", "Extensive",
 	"Everything will be logged - use with caution!");
-public static final AllowableValue VERBOSE = new AllowableValue("Verbose", "Verbose", 
+public static final AllowableValue VERBOSE = new AllowableValue("Verbose", "Verbose",
 	"Quite a bit of logging will occur");
-public static final AllowableValue REGULAR = new AllowableValue("Regular", "Regular", 
+public static final AllowableValue REGULAR = new AllowableValue("Regular", "Regular",
 	"Typical logging will occur");
 
 public static final PropertyDescriptor LOG_LEVEL = new PropertyDescriptor.Builder()
@@ -682,7 +768,7 @@ Service and is intended to provide a brief description of the
 functionality
 provided by the component. The Tags annotation has a `value` variable
 that is defined to be an Array of Strings. As such, it is used
-by providing multiple values as a comma-separated list of ++String++s 
+by providing multiple values as a comma-separated list of ++String++s
 with curly braces. These values are then incorporated into the UI by
 allowing
 users to filter the components based on a tag (i.e., a keyword).
@@ -709,7 +795,7 @@ Many times a processor will expect certain FlowFile attributes be set on in-boun
 for the processor to function properly.  In other cases a processor may update or
 create FlowFile attributes on the out-bound FlowFile.  Processor developers may document both of these
 behaviors using the `ReadsAttribute` and `WritesAttribute` documentation annotations.  These attributes are used to generate documentation
-that gives users a better understanding of how a processor will interact with the flow.  
+that gives users a better understanding of how a processor will interact with the flow.
 
 Note: Because Java 7 does not support
 repeated annotations on a type, you may need to use `ReadsAttributes` and `WritesAttributes` to indicate
@@ -727,10 +813,10 @@ public final class InvokeHTTP extends AbstractProcessor {
 ----
 
 === Documenting Related Components
-Often Processors and ControllerServices are related to one another.  Sometimes its a put/get relation as in `PutFile` and `GetFile`.  
+Often Processors and ControllerServices are related to one another.  Sometimes it is a put/get relation as in `PutFile` and `GetFile`.
 Sometimes a Processor uses a ControllerService like `InvokeHTTP` and `StandardSSLContextService`.  Sometimes one ControllerService uses another
 like `DistributedMapCacheClientService` and `DistributedMapCacheServer`.  Developers of these extension points may relate these
-different components using the `SeeAlso` tag.  This annotation links these components in the documentation.  
+different components using the `SeeAlso` tag.  This annotation links these components in the documentation.
 `SeeAlso` can be applied to Processors, ControllerServices and ReportingTasks.  An example of how to do this is listed below:
 
 [source, java]
@@ -755,13 +841,38 @@ name of the Processor, and this directory's parent should be named
 `docs` and exist in the root of the Processor's jar.
 This file will be linked from a generated HTML file that will contain
 all the Capability, Keyword, PropertyDescription and Relationship information,
-so it will not be necessary to duplicate that.  This is a place 
-to provide a rich explanation of what this Processor is doing, what kind of 
+so it will not be necessary to duplicate that.  This is a place
+to provide a rich explanation of what this Processor is doing, what kind of
 data it expects and produces, and what FlowFile attributes it expects and produces.
 Because this documentation is in an HTML format, you may include images and tables
 to best describe this component.  The same methods can be used to provide advanced
 documentation for Processors, ControllerServices and ReportingTasks.
 
+[[provenance_events]]
+== Provenance Events
+
+The different event types for provenance reporting are:
+
+[options="header"]
+|======================
+|Provenance Event        |Description
+|ADDINFO                 |Indicates a provenance event for adding additional information such as new linkage to a new URI or UUID
+|ATTRIBUTES_MODIFIED     |Indicates that a FlowFile's attributes were modified in some way. This event is not needed when another event is reported at the same time, as the other event will already contain all FlowFile attributes
+|CLONE                   |Indicates that a FlowFile is an exact duplicate of its parent FlowFile
+|CONTENT_MODIFIED        |Indicates that a FlowFile's content was modified in some way. When using this Event Type, it is advisable to provide details about how the content is modified
+|CREATE                  |Indicates that a FlowFile was generated from data that was not received from a remote system or external process
+|DOWNLOAD                |Indicates that the contents of a FlowFile were downloaded by a user or external entity
+|DROP                    |Indicates a provenance event for the conclusion of an object's life for some reason other than object expiration
+|EXPIRE                  |Indicates a provenance event for the conclusion of an object's life due to the object not being processed in a timely manner
+|FETCH                   |Indicates that the contents of a FlowFile were overwritten using the contents of some external resource. This is similar to the RECEIVE event but varies in that RECEIVE events are intended to be used as the event that introduces the FlowFile into the system, whereas FETCH is used to indicate that the contents of an existing FlowFile were overwritten
+|FORK                    |Indicates that one or more FlowFiles were derived from a parent FlowFile
+|JOIN                    |Indicates that a single FlowFile is derived from joining together multiple parent FlowFiles
+|RECEIVE                 |Indicates a provenance event for receiving data from an external process. This Event Type is expected to be the first event for a FlowFile. As such, a Processor that receives data from an external source and uses that data to replace the content of an existing FlowFile should use the FETCH event type, rather than the RECEIVE event type
+|REPLAY                  |Indicates a provenance event for replaying a FlowFile. The UUID of the event indicates the UUID of the original FlowFile that is being replayed. The event contains one Parent UUID that is also the UUID of the FlowFile that is being replayed and one Child UUID that is the UUID of the a newly created FlowFile that will be re-queued for processing
+|ROUTE                   |Indicates that a FlowFile was routed to a specified relationship and provides information about why the FlowFile was routed to this relationship
+|SEND                    |Indicates a provenance event for sending data to an external process
+|UNKNOWN                 |Indicates that the type of provenance event is unknown because the user who is attempting to access the event is not authorized to know the type
+|======================
 
 
 == Common Processor Patterns
@@ -780,7 +891,7 @@ hardened rules.
 === Data Ingress
 
 A Processor that ingests data into NiFi has a single Relationship
-names `success`. This Processor generates
+named `success`. This Processor generates
 new FlowFiles via the ProcessSession `create` method and does not pull
 FlowFiles from incoming Connections.
 The Processor name starts with "Get" or "Listen," depending on whether
@@ -1318,7 +1429,7 @@ If at any point in the InputStreamCallback, a condition is reached in
 which processing cannot continue
 (for example, the input is malformed), a `ProcessException` should be
 thrown. The call to the
-ProcesssSession's `read` method is wrapped in a `try/catch` block
+ProcessSession's `read` method is wrapped in a `try/catch` block
 where `ProcessException` is
 caught. If an Exception is caught, a log message is generated
 explaining the error. The List of
@@ -1334,7 +1445,7 @@ are updated to include the following attributes:
 |===
 | Attribute Name | Description
 | `split.parent.uuid` | The UUID of the original FlowFile
-| `split.index` | A one-up number indicating which FlowFile in the list this is (the first FlowFile 
+| `split.index` | A one-up number indicating which FlowFile in the list this is (the first FlowFile
 				  created will have a value `0`, the second will have a value `1`, etc.)
 | `split.count` | The total number of split FlowFiles that were created
 |===
@@ -1446,7 +1557,7 @@ in the `nifi.properties` file but is 10 seconds by default.
 === Exceptions within a callback: IOException, RuntimeException
 
 More often than not, when an Exception occurs in a Processor, it occurs from within a callback (I.e.,
-`InputStreamCallback`, `OutputStreamCallback`, or `StreamCallback`). That is, during the processing of a 
+`InputStreamCallback`, `OutputStreamCallback`, or `StreamCallback`). That is, during the processing of a
 FlowFile's content. Callbacks are allowed to throw either `RuntimeException` or `IOException`. In the case
 of RuntimeException, this Exception will propagate back to the `onTrigger` method. In the case of an
 `IOException`, the Exception will be wrapped within a ProcessException and this ProcessException will then
@@ -1455,7 +1566,7 @@ be thrown from the Framework.
 For this reason, it is recommended that Processors that use callbacks do so within a `try/catch` block
 and catch `ProcessException` as well as any other `RuntimeException` that they expect their callback to
 throw. It is *not* recommended that Processors catch the general `Exception` or `Throwable` cases, however.
-This is discouraged for two reasons. 
+This is discouraged for two reasons.
 
 First, if an unexpected RuntimeException is thrown, it is likely a bug
 and allowing the framework to rollback the session will ensure no data loss and ensures that DataFlow Managers
@@ -1490,7 +1601,7 @@ resource. If the Processor cannot connect to the remote resource, or if the remo
 but reports that it has none, the Processor should call `yield` on the `ProcessContext` object and then return. By doing
 this, the Processor is telling the framework that it should not waste resources triggering this Processor to run, because
 there's nothing that it can do - it's better to use those resources to allow other Processors to run.
- 
+
 
 === Session Rollback
 
@@ -1563,7 +1674,7 @@ has several drawbacks:
 	  deal of duplicated code. If the schema changes, for instance, many Processors must be updated.
 	- This intermediate data is thrown away when the Processor finishes sending to the remote service. The intermediate data format
 	  may well be useful to other Processors.
-	
+
 In order to avoid these issues, and make Processors more reusable, a Processor should always stick to the principal of "do one thing and do
 it well." Such a Processor should be broken into two separate Processors: one to convert the data from Format X to Format Y, and another
 Processor to send data to the remote resource.
@@ -1580,7 +1691,7 @@ is a list of standard conventions that are used:
 	- Processors that push data to a remote system are named Put<Service> or Put<Protocol>.
 	- Relationship names are lower-cased and use spaces to delineated words.
 	- Property names capitalize significant words, as would be done with the title of a book.
-	
+
 
 
 === Processor Behavior Annotations
@@ -1598,13 +1709,13 @@ will handle your Processor:
 	- `EventDriven`: Instructs the framework that the Processor can be scheduled using the Event-Driven scheduling
 		strategy. This strategy is still experimental at this point, but can result in reduced resource utilization
 		on dataflows that do not handle extremely high data rates.
-		
+
 	- `SideEffectFree`: Indicates that the Processor does not have any side effects external to NiFi. As a result, the
 		framework is free to invoke the Processor many times with the same input without causing any unexpected
 		results to occur. This implies idempotent behavior. This can be used by the framework to improve efficiency by
 		performing actions such as transferring a ProcessSession from one Processor to another, such that if
 		a problem occurs many Processors' actions can be rolled back and performed again.
-		  
+
 	- `SupportsBatching`: This annotation indicates that it is okay for the framework to batch together multiple
 		ProcessSession commits into a single commit. If this annotation is present, the user will be able to choose
 		whether they prefer high throughput or lower latency in the Processor's Scheduling tab. This annotation should
@@ -1612,12 +1723,12 @@ will handle your Processor:
 		there is no guarantee that the data has been safely stored in NiFi's Content, FlowFile, and Provenance Repositories.
 		As a result, it is not appropriate for those Processors that receive data from an external source, commit the session,
 		and then delete the remote data or confirm a transaction with a remote resource.
-	
+
 	- `TriggerSerially`: When this annotation is present, the framework will not allow the user to schedule more than one
 		concurrent thread to execute the `onTrigger` method at a time. Instead, the number of thread ("Concurrent Tasks")
 		will always be set to `1`. This does *not*, however, mean that the Processor does not have to be thread-safe,
-		as the thread that is executing `onTrigger` may change between invocations. 
-	 
+		as the thread that is executing `onTrigger` may change between invocations.
+
 	- `TriggerWhenAnyDestinationAvailable`: By default, NiFi will not schedule a Processor to run if any of its outbound
 		queues is full. This allows back-pressure to be applied all the way a chain of Processors. However, some Processors
 		may need to run even if one of the outbound queues is full. This annotations indicates that the Processor should run
@@ -1626,12 +1737,23 @@ will handle your Processor:
 		scheduling strategy is used, the Processor will not run if any outbound queue is full. However, if the "next available"
 		scheduling strategy is used, the Processor will run if any Relationship at all is available and will route FlowFiles
 		only to those relationships that are available.
-	 
+
 	- `TriggerWhenEmpty`: The default behavior is to trigger a Processor to run only if its input queue has at least one
 		FlowFile or if the Processor has no input queues (which is typical of a "source" Processor). Applying this annotation
 		will cause the framework to ignore the size of the input queues and trigger the Processor regardless of whether or
 		not there is any data on an input queue. This is useful, for example, if the Processor needs to be triggered to run
 		periodically to time out a network connection.
+
+    - `InputRequirement`: By default, all Processors will allow users to create incoming connections for the Processor, but
+        if the user does not create an incoming connection, the Processor is still valid and can be scheduled to run. For Processors
+        that are expected to be used as a "Source Processor," though, this can be confusing to the user, and the user may attempt to
+        send FlowFiles to that Processor, only for the FlowFiles to queue up without being processed. Conversely, if the Processor
+        expects incoming FlowFiles but does not have an input queue, the Processor will be scheduled to run but will perform no work,
+        as it will receive no FlowFile, and this leads to confusion as well. As a result, we can use the `@InputRequirement` annotation
+        and provide it a value of `INPUT_REQUIRED`, `INPUT_ALLOWED`, or `INPUT_FORBIDDEN`. This provides information to the framework
+        about when the Processor should be made invalid, or whether or not the user should even be able to draw a Connection to the
+        Processor. For instance, if a Processor is annotated with `InputRequirement(Requirement.INPUT_FORBIDDEN)`, then the user will
+        not even be able to create a Connection with that Processor as the destination.
 
 
 === Data Buffering
@@ -1664,7 +1786,8 @@ have an `onTrigger` method because Controller Services are not
 scheduled to run periodically, and
 Controller Services do not have Relationships because they are not
 integrated into the flow directly. Rather,
-they are used Processors, Reporting Tasks, and other Controller Services.
+they are used by Processors, Reporting Tasks, and
+other Controller Services.
 
 [[developing-controller-service]]
 === Developing a ControllerService
@@ -1726,7 +1849,7 @@ that references a Controller Service as such:
 ----
 public static final PropertyDescriptor SSL_CONTEXT_SERVICE = new PropertyDescriptor.Builder()
   .name("SSL Context Service")
-  .details("Specified the SSL Context Service that can be used to create secure connections")
+  .description("Specified the SSL Context Service that can be used to create secure connections")
   .required(true)
   .identifiesControllerService(SSLContextService.class)
   .build();
@@ -1827,8 +1950,25 @@ in many different ways to expose metrics and monitoring capabilities
 needed for any number of operational concerns.
 
 
+== Command Line Tools
 
+=== tls-toolkit
 
+The Client/Server mode of operation came about from the desire to automatically generate required TLS configuration artifacts without needing to perform that generation in a centralized place.  This simplifies configuration in a clustered environment.  Since we don’t necessarily have a central place to run the generation logic or a trusted Certificate Authority, a shared secret is used to authenticate the clients and server to each other.
+
+The tls-toolkit prevents man in the middle attacks using HMAC verification of the public keys of the CA server and the CSR the client sends. A shared secret (the token) is used as the HMAC key.
+
+The basic process goes as follows:
+
+1. The client generates a KeyPair.
+2. The client generates a request json payload containing a CSR and an HMAC with the token as the key and the CSR’s public key fingerprint as the data.
+3. The client connects to the CA Hostname at the https port specified and validates that the CN of the CA’s certificate matches the hostname (NOTE: because we don’t trust the CA at this point, this adds NO security, it is just a way to error out early if possible).
+4. The server validates the HMAC from the client payload using the token as the key and the CSR’s public key fingerprint as the data.  This proves that the client knows the shared secret and that it wanted a CSR with that public key to be signed.  (NOTE: a man in the middle could forward this on but wouldn’t be able to change the CSR without invalidating the HMAC, defeating the purpose).
+5. The server signs the CSR and sends back a response json payload containing the certificate and an HMAC with the token as the key and a fingerprint of its public key as the data.
+6. The client validates the response HMAC using the token as the key and a fingerprint of the certificate public key supplied by the TLS session.  This validates that a CA that knows the shared secret is the one we are talking to over TLS.
+7. The client verifies that the CA certificate from the TLS session signed the certificate in the payload.
+8. The client adds the generated KeyPair to its keystore with the certificate chain and adds the CA certificate from the TLS connection to its truststore.
+9. The client writes out the configuration json containing keystore, truststore passwords and other details about the exchange.
 
 
 == Testing
@@ -1879,11 +2019,11 @@ both an identifier for the Controller Service and an instance of the Controller 
 If the Controller Service needs to be configured, its properties can be set by
 calling the `setProperty(ControllerService, PropertyDescriptor, String)`, `setProperty(ControllerService, String, String)`,
 or `setProperty(ControllerService, PropertyDescriptor, AllowableValue)` method. Each of these methods returns a
-`ValidationResult`. This object can then be inspected to ensure that the property is valid by calling `isValid`. 
+`ValidationResult`. This object can then be inspected to ensure that the property is valid by calling `isValid`.
 Annotation data can be set by calling the `setAnnotationData(ControllerService, String)` method.
 
 We can now ensure that the Controller Service is valid by calling `assertValid(ControllerService)` - or ensure
-that the configured values are not valid, if testing the Controller Service itself, by calling 
+that the configured values are not valid, if testing the Controller Service itself, by calling
 `assertNotValid(ControllerService)`.
 
 Once a Controller Service has been added to the Test Runner and configured, it can now be enabled by calling the
@@ -1911,7 +2051,7 @@ different overrides, and allows data to be added in the form of a `byte[]`, `Inp
 methods also supports a variation that allows a `Map<String, String>` to be added to support FlowFile attributes.
 
 Additionally, there is an `enqueue` method that takes a var-args of FlowFile objects. This can be useful, for example,
-to obtain the output of a Processor and then feed this to the input of the Processor. 
+to obtain the output of a Processor and then feed this to the input of the Processor.
 
 
 === Run the Processor
@@ -1921,7 +2061,7 @@ to run by calling the `run` method of `TestRunner`. If this method is called wit
 invoke any method in the Processor with an `@OnScheduled` annotation, call the Processor's `onTrigger` method once,
 and then run the `@OnUnscheduled` and finally `@OnStopped` methods.
 
-If it is desirable to run several iterations of the `onTrigger` method before the other `@OnUnscheduled` and 
+If it is desirable to run several iterations of the `onTrigger` method before the other `@OnUnscheduled` and
 `@OnStopped` life-cycle events are triggered, the `run(int)` method can be used to specify now many iterations
 of `onTrigger` should be called.
 
@@ -1936,13 +2076,13 @@ If it is useful to test behavior that occurs with multiple threads, this can als
 `setThreadCount` method of `TestRunner`. The default is 1 thread. If using multiple threads, it is important
 to remember that the `run` call of `TestRunner` specifies how many times the Processor should be triggered, not
 the number of times that the Processor should be triggered per thread. So, if the thread count is set to 2 but
-`run(1)` is called, only a single thread will be used. 
+`run(1)` is called, only a single thread will be used.
 
 
 === Validate Output
 
 After a Processor has finished running, a unit test will generally want to validate that the FlowFiles went where
-they were expected to go. This can be achieved using the `TestRunners` `assertAllFlowFilesTransferred` and 
+they were expected to go. This can be achieved using the `TestRunners` `assertAllFlowFilesTransferred` and
 `assertTransferCount` methods. The former method takes as arguments a Relationship and an integer to dictate how many
 FlowFiles should have been transferred to that Relationship. The method will fail the unit test unless this number of
 FlowFiles were transferred to the given Relationship *or* if any FlowFile was transferred to any other Relationship.
@@ -1957,7 +2097,7 @@ that other attributes are not present (`assertAttributeNotExists`), or that Attr
 (`assertAttributeEquals`, `assertAttributeNotEquals`). Similar methods exist for verifying the contents of the FlowFile.
 The contents of a FlowFile can be compared to a `byte[]`, and `InputStream`, a file, or a String. If the data is expected
 to be textual, the String version is preferred, as it provides a more intuitive error message if the output is not
-as expected. 
+as expected.
 
 
 
@@ -1984,17 +2124,17 @@ public void testConnectionFailure() {
 				public void connect() throws IOException {
 					throw new IOException();
 				}
-				
+
 				// ...
 				// other client methods
 				// ...
 			};
 		}
 	});
-	
+
 	// rest of unit test.
 }
-----  
+----
 
 This allows us to implement a Client that mocks out all of the network communications and returns the different
 error results that we want to test, as well as ensure that our logic is correct for handling successful calls
@@ -2062,7 +2202,7 @@ This is included by adding the following snippet to the NAR's pom.xml:
 </build>
 ----
 
-In the Apache NiFi codebase, this exists in the NiFi root POM from which all other NiFi artifacts 
+In the Apache NiFi codebase, this exists in the NiFi root POM from which all other NiFi artifacts
 (with the exception of the nifi-nar-maven-plugin itself) inherit, so that we do not need to include
 this in any of our other POM files.
 
@@ -2171,6 +2311,58 @@ API artifacts into the same NAR is often acceptable.
 
 
 
+[[per-instance-classloading]]
+== Per-Instance ClassLoading
+
+A component developer may wish to add additional resources to the component’s classpath at runtime.
+For example, you may want to provide the location of a JDBC driver to a processor that interacts with a
+relational database, thus allowing the processor to work with any driver rather than trying to bundle a
+driver into the NAR.
+
+This may be accomplished by declaring one or more PropertyDescriptor instances with
+`dynamicallyModifiesClasspath` set to true. For example:
+
+
+[source,java]
+----
+PropertyDescriptor EXTRA_RESOURCE = new PropertyDescriptor.Builder()
+   .name("Extra Resources")
+   .description("The path to one or more resources to add to the classpath.")
+   .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+   .expressionLanguageSupported(true)
+   .dynamicallyModifiesClasspath(true)
+   .build();
+----
+
+When these properties are set on a component, the framework identifies all properties where
+`dynamicallyModifiesClasspath` is set to true. For each of these properties, the framework
+attempts to resolve filesystem resources from the value of the property. The value may be a
+comma-separated list of one or more directories or files, where any paths that do not exist are
+skipped. If the resource represents a directory, the directory is listed, and all of the files
+in that directory are added to the classpath individually.
+
+Each property may impose further restrictions on the format of the value through the validators.
+For example, using StandardValidators.FILE_EXISTS_VALIDATOR restricts the property to accepting a
+single file. Using StandardValidators.NON_EMPTY_VALIDATOR allows any combination of comma-separated
+files or directories.
+
+Resources are added to the instance ClassLoader by adding them to an inner ClassLoader that is always
+checked first. Anytime the value of these properties change, the inner ClassLoader is closed and
+re-created with the new resources.
+
+NiFi provides the `@RequiresInstanceClassLoading` annotation to further expand and isolate the libraries
+available on a component’s classpath. You can annotate a component with `@RequiresInstanceClassLoading`
+to indicate that the instance ClassLoader for the component requires a copy of all the resources in the
+component's NAR ClassLoader. When `@RequiresInstanceClassLoading` is not present, the
+instance ClassLoader simply has it's parent ClassLoader set to the NAR ClassLoader, rather than
+copying resources.
+
+Because @RequiresInstanceClassLoading copies resources from the NAR ClassLoader for each instance of the
+component, use this capability judiciously. If ten instances of one component are created, all classes
+from the component's NAR ClassLoader are loaded into memory ten times. This could eventually increase the
+memory footprint significantly when enough instances of the component are created.
+
+
 
 == How to contribute to Apache NiFi
 
@@ -2185,7 +2377,7 @@ The back end of Apache NiFi is written in Java. The web tier makes use of JAX-RS
 used to provide a user interface. We depend on several third-party JavaScript libraries, including D3 and JQuery,
 among others. We make use of Apache Maven for our builds and Git for our version control system.
 
-Documentation is created in link:http://asciidoctor.org[AsciiDoc]. 
+Documentation is created in link:http://asciidoctor.org[AsciiDoc].
 
 
 === Where to Start?
@@ -2214,4 +2406,3 @@ The developer mailing list (dev@nifi.apache.org) is monitored pretty closely, an
 quickly. If you have a question, don't hesitate to shoot us an e-mail - we're here to help! Unfortunately, though, e-mails
 can get lost in the shuffle, so if you do send an e-mail and don't get a response within a day or two, it's our fault - don't
 worry about bothering us. Just ping the mailing list again.
-

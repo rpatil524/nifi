@@ -16,13 +16,6 @@
  */
 package org.apache.nifi.processors.hadoop;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.regex.Pattern;
-
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -40,6 +33,13 @@ import org.apache.nifi.processors.hadoop.util.OutputStreamWritable;
 import org.apache.nifi.processors.hadoop.util.SequenceFileReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * This class reads a SequenceFile and generates FlowFiles, one per each KeyValue Pair in the SequenceFile. The FlowFile name is the key, which is typically a file name but may not be; the FlowFile
@@ -61,7 +61,7 @@ public class ValueReader implements SequenceFileReader<Set<FlowFile>> {
     public Set<FlowFile> readSequenceFile(final Path file, Configuration configuration, FileSystem fileSystem) throws IOException {
 
         Set<FlowFile> flowFiles = new HashSet<>();
-        final SequenceFile.Reader reader = new SequenceFile.Reader(fileSystem, file, configuration);
+        final SequenceFile.Reader reader = new SequenceFile.Reader(configuration, Reader.file(fileSystem.makeQualified(file)));
         final String inputfileName = file.getName() + "." + System.nanoTime() + ".";
         int counter = 0;
         LOG.debug("Reading from sequence file {}", new Object[]{file});

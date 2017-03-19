@@ -18,34 +18,12 @@
  */
 package org.apache.nifi.processors.solr;
 
-import org.apache.commons.io.IOUtils;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.documentation.Tags;
-import org.apache.nifi.annotation.lifecycle.OnRemoved;
-import org.apache.nifi.annotation.lifecycle.OnStopped;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.logging.ProcessorLog;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.ProcessorInitializationContext;
-import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.processor.exception.ProcessException;
-import org.apache.nifi.processor.io.OutputStreamCallback;
-import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.util.StopWatch;
-import org.apache.solr.client.solrj.SolrQuery;
-import org.apache.solr.client.solrj.SolrServerException;
-import org.apache.solr.client.solrj.response.QueryResponse;
-import org.apache.solr.client.solrj.util.ClientUtils;
-import org.apache.solr.common.SolrDocument;
-import org.apache.solr.common.SolrDocumentList;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -61,7 +39,36 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.commons.io.IOUtils;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.annotation.lifecycle.OnRemoved;
+import org.apache.nifi.annotation.lifecycle.OnStopped;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.flowfile.FlowFile;
+import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.ProcessorInitializationContext;
+import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.processor.io.OutputStreamCallback;
+import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.util.StopWatch;
+import org.apache.solr.client.solrj.SolrQuery;
+import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.request.QueryRequest;
+import org.apache.solr.client.solrj.response.QueryResponse;
+import org.apache.solr.client.solrj.util.ClientUtils;
+import org.apache.solr.common.SolrDocument;
+import org.apache.solr.common.SolrDocumentList;
+import org.apache.solr.common.SolrInputDocument;
+
 @Tags({"Apache", "Solr", "Get", "Pull"})
+@InputRequirement(Requirement.INPUT_FORBIDDEN)
 @CapabilityDescription("Queries Solr and outputs the results as a FlowFile")
 public class GetSolr extends SolrProcessor {
 
@@ -136,6 +143,16 @@ public class GetSolr extends SolrProcessor {
         descriptors.add(SORT_CLAUSE);
         descriptors.add(DATE_FIELD);
         descriptors.add(BATCH_SIZE);
+        descriptors.add(JAAS_CLIENT_APP_NAME);
+        descriptors.add(BASIC_USERNAME);
+        descriptors.add(BASIC_PASSWORD);
+        descriptors.add(SSL_CONTEXT_SERVICE);
+        descriptors.add(SOLR_SOCKET_TIMEOUT);
+        descriptors.add(SOLR_CONNECTION_TIMEOUT);
+        descriptors.add(SOLR_MAX_CONNECTIONS);
+        descriptors.add(SOLR_MAX_CONNECTIONS_PER_HOST);
+        descriptors.add(ZK_CLIENT_TIMEOUT);
+        descriptors.add(ZK_CONNECTION_TIMEOUT);
         this.descriptors = Collections.unmodifiableList(descriptors);
 
         final Set<Relationship> relationships = new HashSet<>();
@@ -173,7 +190,7 @@ public class GetSolr extends SolrProcessor {
 
     @Override
     public void onTrigger(ProcessContext context, ProcessSession session) throws ProcessException {
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
         readLastEndDate();
 
         final SimpleDateFormat sdf = new SimpleDateFormat(LAST_END_DATE_PATTERN, Locale.US);
@@ -212,9 +229,14 @@ public class GetSolr extends SolrProcessor {
         }
 
         try {
+            final QueryRequest req = new QueryRequest(solrQuery);
+            if (isBasicAuthEnabled()) {
+                req.setBasicAuthCredentials(getUsername(), getPassword());
+            }
+
             // run the initial query and send out the first page of results
             final StopWatch stopWatch = new StopWatch(true);
-            QueryResponse response = getSolrClient().query(solrQuery);
+            QueryResponse response = req.process(getSolrClient());
             stopWatch.stop();
 
             long duration = stopWatch.getDuration(TimeUnit.MILLISECONDS);
@@ -226,10 +248,11 @@ public class GetSolr extends SolrProcessor {
             if (documentList != null && documentList.getNumFound() > 0) {
                 FlowFile flowFile = session.create();
                 flowFile = session.write(flowFile, new QueryResponseOutputStreamCallback(response));
+                flowFile = session.putAttribute(flowFile, CoreAttributes.MIME_TYPE.key(), "application/xml");
                 session.transfer(flowFile, REL_SUCCESS);
 
                 StringBuilder transitUri = new StringBuilder("solr://");
-                transitUri.append(context.getProperty(SOLR_LOCATION).getValue());
+                transitUri.append(getSolrLocation());
                 if (SOLR_TYPE_CLOUD.equals(context.getProperty(SOLR_TYPE).getValue())) {
                     transitUri.append("/").append(context.getProperty(COLLECTION).getValue());
                 }
@@ -315,9 +338,19 @@ public class GetSolr extends SolrProcessor {
         @Override
         public void process(OutputStream out) throws IOException {
             for (SolrDocument doc : response.getResults()) {
-                String xml = ClientUtils.toXML(ClientUtils.toSolrInputDocument(doc));
-                IOUtils.write(xml, out);
+                String xml = ClientUtils.toXML(toSolrInputDocument(doc));
+                IOUtils.write(xml, out, StandardCharsets.UTF_8);
             }
+        }
+
+        public SolrInputDocument toSolrInputDocument(SolrDocument d) {
+            SolrInputDocument doc = new SolrInputDocument();
+
+            for (String name : d.getFieldNames()) {
+                doc.addField(name, d.getFieldValue(name));
+            }
+
+            return doc;
         }
     }
 }

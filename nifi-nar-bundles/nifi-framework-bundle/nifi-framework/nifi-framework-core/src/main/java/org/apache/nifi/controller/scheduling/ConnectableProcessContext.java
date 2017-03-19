@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.Connection;
 import org.apache.nifi.controller.ControllerService;
@@ -37,6 +38,7 @@ import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
+import org.apache.nifi.util.Connectables;
 
 /**
  * This class is essentially an empty shell for {@link Connectable}s that are not Processors
@@ -45,10 +47,12 @@ public class ConnectableProcessContext implements ProcessContext {
 
     private final Connectable connectable;
     private final StringEncryptor encryptor;
+    private final StateManager stateManager;
 
-    public ConnectableProcessContext(final Connectable connectable, final StringEncryptor encryptor) {
+    public ConnectableProcessContext(final Connectable connectable, final StringEncryptor encryptor, final StateManager stateManager) {
         this.connectable = connectable;
         this.encryptor = encryptor;
+        this.stateManager = stateManager;
     }
 
     @Override
@@ -58,6 +62,9 @@ public class ConnectableProcessContext implements ProcessContext {
 
     @Override
     public PropertyValue getProperty(final String propertyName) {
+        // None of the connectable components other than Processor's will ever need to evaluate these.
+        // Since Processors use a different implementation of ProcessContext all together, we will just
+        // return null for all values
         return new PropertyValue() {
             @Override
             public String getValue() {
@@ -133,6 +140,32 @@ public class ConnectableProcessContext implements ProcessContext {
             public boolean isSet() {
                 return false;
             }
+
+            @Override
+            public PropertyValue evaluateAttributeExpressions(Map<String, String> attributes) throws ProcessException {
+                return null;
+            }
+
+            @Override
+            public PropertyValue evaluateAttributeExpressions(FlowFile flowFile, Map<String, String> additionalAttributes) throws ProcessException {
+                return null;
+            }
+
+            @Override
+            public PropertyValue evaluateAttributeExpressions(Map<String, String> attributes, AttributeValueDecorator decorator) throws ProcessException {
+                return null;
+            }
+
+            @Override
+            public PropertyValue evaluateAttributeExpressions(FlowFile flowFile, Map<String, String> additionalAttributes, AttributeValueDecorator decorator) throws ProcessException {
+                return null;
+            }
+
+            @Override
+            public PropertyValue evaluateAttributeExpressions(FlowFile flowFile, Map<String, String> additionalAttributes, AttributeValueDecorator decorator, Map<String, String> stateValues)
+                    throws ProcessException {
+                return null;
+            }
         };
     }
 
@@ -197,10 +230,28 @@ public class ConnectableProcessContext implements ProcessContext {
     }
 
     @Override
+    public boolean hasNonLoopConnection() {
+        return Connectables.hasNonLoopConnection(connectable);
+    }
+
+    @Override
     public boolean hasConnection(Relationship relationship) {
         Set<Connection> connections = connectable.getConnections(relationship);
         return connections != null && !connections.isEmpty();
     }
 
+    @Override
+    public boolean isExpressionLanguagePresent(PropertyDescriptor property) {
+        return false;
+    }
 
+    @Override
+    public StateManager getStateManager() {
+        return stateManager;
+    }
+
+    @Override
+    public String getName() {
+        return connectable.getName();
+    }
 }

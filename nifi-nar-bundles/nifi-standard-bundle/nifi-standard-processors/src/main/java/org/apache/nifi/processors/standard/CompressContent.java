@@ -28,25 +28,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-
-import lzma.sdk.lzma.Decoder;
-import lzma.streams.LzmaInputStream;
-import lzma.streams.LzmaOutputStream;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.ReadsAttribute;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.behavior.ReadsAttribute;
-import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -57,16 +56,24 @@ import org.apache.nifi.processor.io.StreamCallback;
 import org.apache.nifi.stream.io.BufferedInputStream;
 import org.apache.nifi.stream.io.BufferedOutputStream;
 import org.apache.nifi.stream.io.GZIPOutputStream;
-import org.apache.nifi.util.ObjectHolder;
 import org.apache.nifi.util.StopWatch;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.XZInputStream;
 import org.tukaani.xz.XZOutputStream;
 
+import lzma.sdk.lzma.Decoder;
+import lzma.streams.LzmaInputStream;
+import lzma.streams.LzmaOutputStream;
+import org.xerial.snappy.SnappyFramedInputStream;
+import org.xerial.snappy.SnappyFramedOutputStream;
+import org.xerial.snappy.SnappyInputStream;
+import org.xerial.snappy.SnappyOutputStream;
+
 @EventDriven
 @SideEffectFree
 @SupportsBatching
-@Tags({"content", "compress", "decompress", "gzip", "bzip2", "lzma", "xz-lzma2"})
+@InputRequirement(Requirement.INPUT_REQUIRED)
+@Tags({"content", "compress", "decompress", "gzip", "bzip2", "lzma", "xz-lzma2", "snappy", "snappy framed"})
 @CapabilityDescription("Compresses or decompresses the contents of FlowFiles using a user-specified compression algorithm and updates the mime.type "
     + "attribute as appropriate")
 @ReadsAttribute(attribute = "mime.type", description = "If the Compression Format is set to use mime.type attribute, this attribute is used to "
@@ -80,14 +87,17 @@ public class CompressContent extends AbstractProcessor {
     public static final String COMPRESSION_FORMAT_BZIP2 = "bzip2";
     public static final String COMPRESSION_FORMAT_XZ_LZMA2 = "xz-lzma2";
     public static final String COMPRESSION_FORMAT_LZMA = "lzma";
+    public static final String COMPRESSION_FORMAT_SNAPPY = "snappy";
+    public static final String COMPRESSION_FORMAT_SNAPPY_FRAMED = "snappy framed";
 
     public static final String MODE_COMPRESS = "compress";
     public static final String MODE_DECOMPRESS = "decompress";
 
     public static final PropertyDescriptor COMPRESSION_FORMAT = new PropertyDescriptor.Builder()
     .name("Compression Format")
-    .description("The compression format to use. Valid values are: GZIP, BZIP2, XZ-LZMA2, and LZMA")
-    .allowableValues(COMPRESSION_FORMAT_ATTRIBUTE, COMPRESSION_FORMAT_GZIP, COMPRESSION_FORMAT_BZIP2, COMPRESSION_FORMAT_XZ_LZMA2, COMPRESSION_FORMAT_LZMA)
+    .description("The compression format to use. Valid values are: GZIP, BZIP2, XZ-LZMA2, LZMA, Snappy, and Snappy Framed")
+    .allowableValues(COMPRESSION_FORMAT_ATTRIBUTE, COMPRESSION_FORMAT_GZIP, COMPRESSION_FORMAT_BZIP2,
+            COMPRESSION_FORMAT_XZ_LZMA2, COMPRESSION_FORMAT_LZMA, COMPRESSION_FORMAT_SNAPPY, COMPRESSION_FORMAT_SNAPPY_FRAMED)
     .defaultValue(COMPRESSION_FORMAT_ATTRIBUTE)
     .required(true)
     .build();
@@ -144,9 +154,12 @@ public class CompressContent extends AbstractProcessor {
 
         final Map<String, String> mimeTypeMap = new HashMap<>();
         mimeTypeMap.put("application/gzip", COMPRESSION_FORMAT_GZIP);
+        mimeTypeMap.put("application/x-gzip", COMPRESSION_FORMAT_GZIP);
         mimeTypeMap.put("application/bzip2", COMPRESSION_FORMAT_BZIP2);
         mimeTypeMap.put("application/x-bzip2", COMPRESSION_FORMAT_BZIP2);
         mimeTypeMap.put("application/x-lzma", COMPRESSION_FORMAT_LZMA);
+        mimeTypeMap.put("application/x-snappy", COMPRESSION_FORMAT_SNAPPY);
+        mimeTypeMap.put("application/x-snappy-framed", COMPRESSION_FORMAT_SNAPPY_FRAMED);
         this.compressionFormatMimeTypeMap = Collections.unmodifiableMap(mimeTypeMap);
     }
 
@@ -167,7 +180,7 @@ public class CompressContent extends AbstractProcessor {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
         final long sizeBeforeCompression = flowFile.getSize();
         final String compressionMode = context.getProperty(MODE).getValue();
 
@@ -190,7 +203,7 @@ public class CompressContent extends AbstractProcessor {
         }
 
         final String compressionFormat = compressionFormatValue;
-        final ObjectHolder<String> mimeTypeRef = new ObjectHolder<>(null);
+        final AtomicReference<String> mimeTypeRef = new AtomicReference<>(null);
         final StopWatch stopWatch = new StopWatch(true);
 
         final String fileExtension;
@@ -206,6 +219,12 @@ public class CompressContent extends AbstractProcessor {
                 break;
             case COMPRESSION_FORMAT_BZIP2:
                 fileExtension = ".bz2";
+                break;
+            case COMPRESSION_FORMAT_SNAPPY:
+                fileExtension = ".snappy";
+                break;
+            case COMPRESSION_FORMAT_SNAPPY_FRAMED:
+                fileExtension = ".sz";
                 break;
             default:
                 fileExtension = "";
@@ -240,6 +259,14 @@ public class CompressContent extends AbstractProcessor {
                                     compressionOut = new XZOutputStream(bufferedOut, new LZMA2Options());
                                     mimeTypeRef.set("application/x-xz");
                                     break;
+                                case COMPRESSION_FORMAT_SNAPPY:
+                                    compressionOut = new SnappyOutputStream(bufferedOut);
+                                    mimeTypeRef.set("application/x-snappy");
+                                    break;
+                                case COMPRESSION_FORMAT_SNAPPY_FRAMED:
+                                    compressionOut = new SnappyFramedOutputStream(bufferedOut);
+                                    mimeTypeRef.set("application/x-snappy-framed");
+                                    break;
                                 case COMPRESSION_FORMAT_BZIP2:
                                 default:
                                     mimeTypeRef.set("application/x-bzip2");
@@ -261,6 +288,12 @@ public class CompressContent extends AbstractProcessor {
                                     break;
                                 case COMPRESSION_FORMAT_GZIP:
                                     compressionIn = new GzipCompressorInputStream(bufferedIn, true);
+                                    break;
+                                case COMPRESSION_FORMAT_SNAPPY:
+                                    compressionIn = new SnappyInputStream(bufferedIn);
+                                    break;
+                                case COMPRESSION_FORMAT_SNAPPY_FRAMED:
+                                    compressionIn = new SnappyFramedInputStream(bufferedIn);
                                     break;
                                 default:
                                     compressionIn = new CompressorStreamFactory().createCompressorInputStream(compressionFormat.toLowerCase(), bufferedIn);

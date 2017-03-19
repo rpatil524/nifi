@@ -33,7 +33,13 @@ public class FileUtils {
 
     public static final long MILLIS_BETWEEN_ATTEMPTS = 50L;
 
+    /* Superseded by renamed class bellow */
+    @Deprecated
     public static void ensureDirectoryExistAndCanAccess(final File dir) throws IOException {
+        ensureDirectoryExistAndCanReadAndWrite(dir);
+    }
+
+    public static void ensureDirectoryExistAndCanReadAndWrite(final File dir) throws IOException {
         if (dir.exists() && !dir.isDirectory()) {
             throw new IOException(dir.getAbsolutePath() + " is not a directory");
         } else if (!dir.exists()) {
@@ -44,6 +50,20 @@ public class FileUtils {
         }
         if (!(dir.canRead() && dir.canWrite())) {
             throw new IOException(dir.getAbsolutePath() + " directory does not have read/write privilege");
+        }
+    }
+
+    public static void ensureDirectoryExistAndCanRead(final File dir) throws IOException {
+        if (dir.exists() && !dir.isDirectory()) {
+            throw new IOException(dir.getAbsolutePath() + " is not a directory");
+        } else if (!dir.exists()) {
+            final boolean made = dir.mkdirs();
+            if (!made) {
+                throw new IOException(dir.getAbsolutePath() + " could not be created");
+            }
+        }
+        if (!dir.canRead()) {
+            throw new IOException(dir.getAbsolutePath() + " directory does not have read privilege");
         }
     }
 
@@ -103,9 +123,11 @@ public class FileUtils {
      * @param directory to delete contents of
      * @param filter if null then no filter is used
      * @param logger to notify
+     * @throws IOException if abstract pathname does not denote a directory, or
+     * if an I/O error occurs
      */
-    public static void deleteFilesInDir(final File directory, final FilenameFilter filter, final Logger logger) {
-        FileUtils.deleteFilesInDir(directory, filter, logger, false);
+    public static void deleteFilesInDirectory(final File directory, final FilenameFilter filter, final Logger logger) throws IOException {
+        FileUtils.deleteFilesInDirectory(directory, filter, logger, false);
     }
 
     /**
@@ -117,9 +139,11 @@ public class FileUtils {
      * @param filter if null then no filter is used
      * @param logger to notify
      * @param recurse true if should recurse
+     * @throws IOException if abstract pathname does not denote a directory, or
+     * if an I/O error occurs
      */
-    public static void deleteFilesInDir(final File directory, final FilenameFilter filter, final Logger logger, final boolean recurse) {
-        FileUtils.deleteFilesInDir(directory, filter, logger, recurse, false);
+    public static void deleteFilesInDirectory(final File directory, final FilenameFilter filter, final Logger logger, final boolean recurse) throws IOException {
+        FileUtils.deleteFilesInDirectory(directory, filter, logger, recurse, false);
     }
 
     /**
@@ -133,18 +157,24 @@ public class FileUtils {
      * @param recurse will look for contents of sub directories.
      * @param deleteEmptyDirectories default is false; if true will delete
      * directories found that are empty
+     * @throws IOException if abstract pathname does not denote a directory, or
+     * if an I/O error occurs
      */
-    public static void deleteFilesInDir(final File directory, final FilenameFilter filter, final Logger logger, final boolean recurse, final boolean deleteEmptyDirectories) {
+    public static void deleteFilesInDirectory(final File directory, final FilenameFilter filter, final Logger logger, final boolean recurse, final boolean deleteEmptyDirectories) throws IOException {
         // ensure the specified directory is actually a directory and that it exists
         if (null != directory && directory.isDirectory()) {
             final File ingestFiles[] = directory.listFiles();
+            if (ingestFiles == null) {
+                // null if abstract pathname does not denote a directory, or if an I/O error occurs
+                throw new IOException("Unable to list directory content in: " + directory.getAbsolutePath());
+            }
             for (File ingestFile : ingestFiles) {
                 boolean process = (filter == null) ? true : filter.accept(directory, ingestFile.getName());
                 if (ingestFile.isFile() && process) {
                     FileUtils.deleteFile(ingestFile, logger, 3);
                 }
                 if (ingestFile.isDirectory() && recurse) {
-                    FileUtils.deleteFilesInDir(ingestFile, filter, logger, recurse, deleteEmptyDirectories);
+                    FileUtils.deleteFilesInDirectory(ingestFile, filter, logger, recurse, deleteEmptyDirectories);
                     if (deleteEmptyDirectories && ingestFile.list().length == 0) {
                         FileUtils.deleteFile(ingestFile, logger, 3);
                     }
@@ -167,8 +197,9 @@ public class FileUtils {
     }
 
     public static void deleteFile(final File file, final boolean recurse) throws IOException {
-        if (file.isDirectory() && recurse) {
-            FileUtils.deleteFiles(Arrays.asList(file.listFiles()), recurse);
+        final File[] list = file.listFiles();
+        if (file.isDirectory() && recurse && list != null) {
+            FileUtils.deleteFiles(Arrays.asList(list), recurse);
         }
         //now delete the file itself regardless of whether it is plain file or a directory
         if (!FileUtils.deleteFile(file, null, 5)) {

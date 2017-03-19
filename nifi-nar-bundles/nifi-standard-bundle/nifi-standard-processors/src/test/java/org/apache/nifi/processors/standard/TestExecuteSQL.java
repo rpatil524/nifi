@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +50,7 @@ import org.slf4j.LoggerFactory;
 
 public class TestExecuteSQL {
 
-    private static Logger LOGGER;
+    private static final Logger LOGGER;
 
     static {
         System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "info");
@@ -63,20 +64,20 @@ public class TestExecuteSQL {
     final static String DB_LOCATION = "target/db";
 
     final static String QUERY_WITH_EL = "select "
-            + "  PER.ID as PersonId, PER.NAME as PersonName, PER.CODE as PersonCode"
-            + ", PRD.ID as ProductId,PRD.NAME as ProductName,PRD.CODE as ProductCode"
-            + ", REL.ID as RelId,    REL.NAME as RelName,    REL.CODE as RelCode"
-            + ", ROW_NUMBER() OVER () as rownr "
-            + " from persons PER, products PRD, relationships REL"
-            + " where PER.ID = ${person.id}";
+        + "  PER.ID as PersonId, PER.NAME as PersonName, PER.CODE as PersonCode"
+        + ", PRD.ID as ProductId,PRD.NAME as ProductName,PRD.CODE as ProductCode"
+        + ", REL.ID as RelId,    REL.NAME as RelName,    REL.CODE as RelCode"
+        + ", ROW_NUMBER() OVER () as rownr "
+        + " from persons PER, products PRD, relationships REL"
+        + " where PER.ID = ${person.id}";
 
     final static String QUERY_WITHOUT_EL = "select "
-            + "  PER.ID as PersonId, PER.NAME as PersonName, PER.CODE as PersonCode"
-            + ", PRD.ID as ProductId,PRD.NAME as ProductName,PRD.CODE as ProductCode"
-            + ", REL.ID as RelId,    REL.NAME as RelName,    REL.CODE as RelCode"
-            + ", ROW_NUMBER() OVER () as rownr "
-            + " from persons PER, products PRD, relationships REL"
-            + " where PER.ID = 10";
+        + "  PER.ID as PersonId, PER.NAME as PersonName, PER.CODE as PersonCode"
+        + ", PRD.ID as ProductId,PRD.NAME as ProductName,PRD.CODE as ProductCode"
+        + ", REL.ID as RelId,    REL.NAME as RelName,    REL.CODE as RelCode"
+        + ", ROW_NUMBER() OVER () as rownr "
+        + " from persons PER, products PRD, relationships REL"
+        + " where PER.ID = 10";
 
 
     @BeforeClass
@@ -107,24 +108,125 @@ public class TestExecuteSQL {
     }
 
     @Test
+    public void testIncomingConnectionWithNoFlowFileAndNoQuery() throws InitializationException {
+        runner.setIncomingConnection(true);
+        runner.run();
+        runner.assertTransferCount(ExecuteSQL.REL_SUCCESS, 0);
+        runner.assertTransferCount(ExecuteSQL.REL_FAILURE, 0);
+    }
+
+    @Test(expected = AssertionError.class)
+    public void testNoIncomingConnectionAndNoQuery() throws InitializationException {
+        runner.setIncomingConnection(false);
+        runner.run();
+    }
+
+    @Test
     public void testNoIncomingConnection() throws ClassNotFoundException, SQLException, InitializationException, IOException {
         runner.setIncomingConnection(false);
-        invokeOnTrigger(null, QUERY_WITHOUT_EL, false);
+        invokeOnTrigger(null, QUERY_WITHOUT_EL, false, true);
     }
 
     @Test
     public void testNoTimeLimit() throws InitializationException, ClassNotFoundException, SQLException, IOException {
-        invokeOnTrigger(null, QUERY_WITH_EL, true);
+        invokeOnTrigger(null, QUERY_WITH_EL, true, true);
+    }
+
+    @Test
+    public void testSelectQueryInFlowFile() throws InitializationException, ClassNotFoundException, SQLException, IOException {
+        invokeOnTrigger(null, QUERY_WITHOUT_EL, true, false);
     }
 
     @Test
     public void testQueryTimeout() throws InitializationException, ClassNotFoundException, SQLException, IOException {
         // Does to seem to have any effect when using embedded Derby
-        invokeOnTrigger(1, QUERY_WITH_EL, true); // 1 second max time
+        invokeOnTrigger(1, QUERY_WITH_EL, true, true); // 1 second max time
     }
 
-    public void invokeOnTrigger(final Integer queryTimeout, final String query, final boolean incomingFlowFile)
-            throws InitializationException, ClassNotFoundException, SQLException, IOException {
+    @Test
+    public void testWithNullIntColumn() throws SQLException {
+        // remove previous test database, if any
+        final File dbLocation = new File(DB_LOCATION);
+        dbLocation.delete();
+
+        // load test data to database
+        final Connection con = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
+        Statement stmt = con.createStatement();
+
+        try {
+            stmt.execute("drop table TEST_NULL_INT");
+        } catch (final SQLException sqle) {
+        }
+
+        stmt.execute("create table TEST_NULL_INT (id integer not null, val1 integer, val2 integer, constraint my_pk primary key (id))");
+
+        stmt.execute("insert into TEST_NULL_INT (id, val1, val2) VALUES (0, NULL, 1)");
+        stmt.execute("insert into TEST_NULL_INT (id, val1, val2) VALUES (1, 1, 1)");
+
+        runner.setIncomingConnection(false);
+        runner.setProperty(ExecuteSQL.SQL_SELECT_QUERY, "SELECT * FROM TEST_NULL_INT");
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteSQL.REL_SUCCESS, 1);
+        runner.getFlowFilesForRelationship(ExecuteSQL.REL_SUCCESS).get(0).assertAttributeEquals(ExecuteSQL.RESULT_ROW_COUNT, "2");
+    }
+
+    @Test
+    public void testWithduplicateColumns() throws SQLException {
+        // remove previous test database, if any
+        final File dbLocation = new File(DB_LOCATION);
+        dbLocation.delete();
+
+        // load test data to database
+        final Connection con = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
+        Statement stmt = con.createStatement();
+
+        try {
+            stmt.execute("drop table host1");
+            stmt.execute("drop table host2");
+        } catch (final SQLException sqle) {
+        }
+
+        stmt.execute("create table host1 (id integer not null, host varchar(45))");
+        stmt.execute("create table host2 (id integer not null, host varchar(45))");
+        stmt.execute("insert into host1 values(1,'host1')");
+        stmt.execute("insert into host2 values(1,'host2')");
+        stmt.execute("select a.host as hostA,b.host as hostB from host1 a join host2 b on b.id=a.id");
+        runner.setIncomingConnection(false);
+        runner.setProperty(ExecuteSQL.SQL_SELECT_QUERY, "select a.host as hostA,b.host as hostB from host1 a join host2 b on b.id=a.id");
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteSQL.REL_SUCCESS, 1);
+        runner.getFlowFilesForRelationship(ExecuteSQL.REL_SUCCESS).get(0).assertAttributeEquals(ExecuteSQL.RESULT_ROW_COUNT, "1");
+    }
+
+    @Test
+    public void testWithSqlException() throws SQLException {
+        // remove previous test database, if any
+        final File dbLocation = new File(DB_LOCATION);
+        dbLocation.delete();
+
+        // load test data to database
+        final Connection con = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
+        Statement stmt = con.createStatement();
+
+        try {
+            stmt.execute("drop table TEST_NO_ROWS");
+        } catch (final SQLException sqle) {
+        }
+
+        stmt.execute("create table TEST_NO_ROWS (id integer)");
+
+        runner.setIncomingConnection(false);
+        // Try a valid SQL statement that will generate an error (val1 does not exist, e.g.)
+        runner.setProperty(ExecuteSQL.SQL_SELECT_QUERY, "SELECT val1 FROM TEST_NO_ROWS");
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteSQL.REL_FAILURE, 1);
+    }
+
+    public void invokeOnTrigger(final Integer queryTimeout, final String query, final boolean incomingFlowFile, final boolean setQueryProperty)
+        throws InitializationException, ClassNotFoundException, SQLException, IOException {
 
         if (queryTimeout != null) {
             runner.setProperty(ExecuteSQL.QUERY_TIMEOUT, queryTimeout.toString() + " secs");
@@ -135,44 +237,49 @@ public class TestExecuteSQL {
         dbLocation.delete();
 
         // load test data to database
-        final Connection con = ((DBCPService)runner.getControllerService("dbcp")).getConnection();
-        TestJdbcHugeStream.loadTestData2Database(con, 100, 2000, 1000);
+        final Connection con = ((DBCPService) runner.getControllerService("dbcp")).getConnection();
+        TestJdbcHugeStream.loadTestData2Database(con, 100, 200, 100);
         LOGGER.info("test data loaded");
 
-        // ResultSet size will be 1x2000x1000 = 2 000 000 rows
+        // ResultSet size will be 1x200x100 = 20 000 rows
         // because of where PER.ID = ${person.id}
-        final int nrOfRows = 2000000;
-        runner.setProperty(ExecuteSQL.SQL_SELECT_QUERY, query);
+        final int nrOfRows = 20000;
 
         if (incomingFlowFile) {
             // incoming FlowFile content is not used, but attributes are used
-            final Map<String, String> attributes = new HashMap<String, String>();
+            final Map<String, String> attributes = new HashMap<>();
             attributes.put("person.id", "10");
-            runner.enqueue("Hello".getBytes(), attributes);
+            if (!setQueryProperty) {
+                runner.enqueue(query.getBytes(), attributes);
+            } else {
+                runner.enqueue("Hello".getBytes(), attributes);
+            }
+        }
+
+        if(setQueryProperty) {
+            runner.setProperty(ExecuteSQL.SQL_SELECT_QUERY, query);
         }
 
         runner.run();
         runner.assertAllFlowFilesTransferred(ExecuteSQL.REL_SUCCESS, 1);
 
-        // read all Avro records and verify created FlowFile contains 1000000
-        // records
         final List<MockFlowFile> flowfiles = runner.getFlowFilesForRelationship(ExecuteSQL.REL_SUCCESS);
         final InputStream in = new ByteArrayInputStream(flowfiles.get(0).toByteArray());
-        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<GenericRecord>();
-        final DataFileStream<GenericRecord> dataFileReader = new DataFileStream<GenericRecord>(in, datumReader);
-        GenericRecord record = null;
-        long recordsFromStream = 0;
-        while (dataFileReader.hasNext()) {
-            // Reuse record object by passing it to next(). This saves us from
-            // allocating and garbage collecting many objects for files with
-            // many items.
-            record = dataFileReader.next(record);
-            recordsFromStream += 1;
-        }
+        final DatumReader<GenericRecord> datumReader = new GenericDatumReader<>();
+        try (DataFileStream<GenericRecord> dataFileReader = new DataFileStream<>(in, datumReader)) {
+            GenericRecord record = null;
+            long recordsFromStream = 0;
+            while (dataFileReader.hasNext()) {
+                // Reuse record object by passing it to next(). This saves us from
+                // allocating and garbage collecting many objects for files with
+                // many items.
+                record = dataFileReader.next(record);
+                recordsFromStream += 1;
+            }
 
-        LOGGER.info("total nr of records from stream: " + recordsFromStream);
-        assertEquals(nrOfRows, recordsFromStream);
-        dataFileReader.close();
+            LOGGER.info("total nr of records from stream: " + recordsFromStream);
+            assertEquals(nrOfRows, recordsFromStream);
+        }
     }
 
     /**

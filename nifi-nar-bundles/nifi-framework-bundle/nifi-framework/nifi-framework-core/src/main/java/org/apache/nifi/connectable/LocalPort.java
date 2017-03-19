@@ -73,10 +73,8 @@ public class LocalPort extends AbstractPort {
     public void onTrigger(final ProcessContext context, final ProcessSession session) {
         readLock.lock();
         try {
-            final List<FlowFile> flowFiles = session.get(10);
-            if (flowFiles.isEmpty()) {
-                context.yield();
-            } else {
+            final List<FlowFile> flowFiles = session.get(100);
+            if (!flowFiles.isEmpty()) {
                 session.transfer(flowFiles, Relationship.ANONYMOUS);
             }
         } finally {
@@ -167,5 +165,10 @@ public class LocalPort extends AbstractPort {
     @Override
     public boolean isSideEffectFree() {
         return true;
+    }
+
+    @Override
+    public String getComponentType() {
+        return "Local Port";
     }
 }

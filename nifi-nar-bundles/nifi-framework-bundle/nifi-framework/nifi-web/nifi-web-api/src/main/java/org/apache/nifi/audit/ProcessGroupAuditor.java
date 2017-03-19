@@ -16,18 +16,17 @@
  */
 package org.apache.nifi.audit;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
 import org.apache.nifi.action.Action;
 import org.apache.nifi.action.Component;
+import org.apache.nifi.action.FlowChangeAction;
 import org.apache.nifi.action.Operation;
 import org.apache.nifi.action.details.ActionDetails;
-import org.apache.nifi.action.details.ConfigureDetails;
-import org.apache.nifi.action.details.MoveDetails;
+import org.apache.nifi.action.details.FlowChangeConfigureDetails;
+import org.apache.nifi.action.details.FlowChangeMoveDetails;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.groups.ProcessGroup;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
-import org.apache.nifi.user.NiFiUser;
 import org.apache.nifi.web.api.dto.ProcessGroupDTO;
 import org.apache.nifi.web.dao.ProcessGroupDAO;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -35,6 +34,10 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Date;
 
 /**
  * Audits process group creation/removal and configuration changes.
@@ -103,7 +106,7 @@ public class ProcessGroupAuditor extends NiFiAuditor {
             // see if the name has changed
             if (name != null && updatedProcessGroup.getName() != null && !name.equals(updatedProcessGroup.getName())) {
                 // create the config details
-                ConfigureDetails configDetails = new ConfigureDetails();
+                FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                 configDetails.setName("name");
                 configDetails.setValue(updatedProcessGroup.getName());
                 configDetails.setPreviousValue(name);
@@ -114,7 +117,7 @@ public class ProcessGroupAuditor extends NiFiAuditor {
             // see if the comments has changed
             if (comments != null && updatedProcessGroup.getComments() != null && !comments.equals(updatedProcessGroup.getComments())) {
                 // create the config details
-                ConfigureDetails configDetails = new ConfigureDetails();
+                FlowChangeConfigureDetails configDetails = new FlowChangeConfigureDetails();
                 configDetails.setName("comments");
                 configDetails.setValue(updatedProcessGroup.getComments());
                 configDetails.setPreviousValue(comments);
@@ -133,14 +136,13 @@ public class ProcessGroupAuditor extends NiFiAuditor {
                 for (ActionDetails detail : details) {
                     // determine the type of operation being performed
                     Operation operation = Operation.Configure;
-                    if (detail instanceof MoveDetails) {
+                    if (detail instanceof FlowChangeMoveDetails) {
                         operation = Operation.Move;
                     }
 
                     // create the port action for updating the name
-                    Action processGroupAction = new Action();
-                    processGroupAction.setUserDn(user.getDn());
-                    processGroupAction.setUserName(user.getUserName());
+                    FlowChangeAction processGroupAction = new FlowChangeAction();
+                    processGroupAction.setUserIdentity(user.getIdentity());
                     processGroupAction.setOperation(operation);
                     processGroupAction.setTimestamp(timestamp);
                     processGroupAction.setSourceId(updatedProcessGroup.getIdentifier());
@@ -152,28 +154,6 @@ public class ProcessGroupAuditor extends NiFiAuditor {
                 }
             }
 
-            // if the user was starting/stopping this process group
-            if (processGroupDTO.isRunning() != null) {
-                // create a process group action
-                Action processGroupAction = new Action();
-                processGroupAction.setUserDn(user.getDn());
-                processGroupAction.setUserName(user.getUserName());
-                processGroupAction.setSourceId(processGroup.getIdentifier());
-                processGroupAction.setSourceName(processGroup.getName());
-                processGroupAction.setSourceType(Component.ProcessGroup);
-                processGroupAction.setTimestamp(new Date());
-
-                // determine the running state
-                if (processGroupDTO.isRunning()) {
-                    processGroupAction.setOperation(Operation.Start);
-                } else {
-                    processGroupAction.setOperation(Operation.Stop);
-                }
-
-                // add this action
-                actions.add(processGroupAction);
-            }
-
             // save actions if necessary
             if (!actions.isEmpty()) {
                 saveActions(actions, logger);
@@ -181,6 +161,46 @@ public class ProcessGroupAuditor extends NiFiAuditor {
         }
 
         return updatedProcessGroup;
+    }
+
+    /**
+     * Audits the update of process group configuration.
+     *
+     * @param proceedingJoinPoint join point
+     * @param groupId group id
+     * @param state scheduled state
+     * @throws Throwable ex
+     */
+    @Around("within(org.apache.nifi.web.dao.ProcessGroupDAO+) && "
+        + "execution(void scheduleComponents(java.lang.String, org.apache.nifi.controller.ScheduledState, java.util.Set)) && "
+        + "args(groupId, state)")
+    public void scheduleComponentsAdvice(ProceedingJoinPoint proceedingJoinPoint, String groupId, ScheduledState state) throws Throwable {
+        ProcessGroupDAO processGroupDAO = getProcessGroupDAO();
+        ProcessGroup processGroup = processGroupDAO.getProcessGroup(groupId);
+
+        // perform the action
+        proceedingJoinPoint.proceed();
+
+        // get the current user
+        NiFiUser user = NiFiUserUtils.getNiFiUser();
+
+        // if the user was starting/stopping this process group
+        FlowChangeAction action = new FlowChangeAction();
+        action.setUserIdentity(user.getIdentity());
+        action.setSourceId(processGroup.getIdentifier());
+        action.setSourceName(processGroup.getName());
+        action.setSourceType(Component.ProcessGroup);
+        action.setTimestamp(new Date());
+
+        // determine the running state
+        if (ScheduledState.RUNNING.equals(state)) {
+            action.setOperation(Operation.Start);
+        } else {
+            action.setOperation(Operation.Stop);
+        }
+
+        // add this action
+        saveAction(action, logger);
     }
 
     /**
@@ -231,7 +251,7 @@ public class ProcessGroupAuditor extends NiFiAuditor {
      * @return action
      */
     public Action generateAuditRecord(ProcessGroup processGroup, Operation operation, ActionDetails actionDetails) {
-        Action action = null;
+        FlowChangeAction action = null;
 
         // get the current user
         NiFiUser user = NiFiUserUtils.getNiFiUser();
@@ -240,9 +260,8 @@ public class ProcessGroupAuditor extends NiFiAuditor {
         if (user != null) {
 
             // create the process group action for adding this process group
-            action = new Action();
-            action.setUserDn(user.getDn());
-            action.setUserName(user.getUserName());
+            action = new FlowChangeAction();
+            action.setUserIdentity(user.getIdentity());
             action.setOperation(operation);
             action.setTimestamp(new Date());
             action.setSourceId(processGroup.getIdentifier());

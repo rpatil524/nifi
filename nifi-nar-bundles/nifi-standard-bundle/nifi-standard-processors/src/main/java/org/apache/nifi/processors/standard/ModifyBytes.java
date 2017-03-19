@@ -25,29 +25,33 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import org.apache.nifi.annotation.behavior.EventDriven;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.behavior.SideEffectFree;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.stream.io.StreamUtils;
-import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
-import org.apache.nifi.annotation.behavior.EventDriven;
-import org.apache.nifi.annotation.behavior.SideEffectFree;
-import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.OutputStreamCallback;
 import org.apache.nifi.processor.io.StreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.StopWatch;
 
 @EventDriven
 @SideEffectFree
 @Tags({"binary", "discard", "keep"})
-@CapabilityDescription("Keep or discard bytes range from a binary file.")
+@InputRequirement(Requirement.INPUT_REQUIRED)
+@CapabilityDescription("Discard byte range at the start and end or all content of a binary file.")
 public class ModifyBytes extends AbstractProcessor {
 
     // Relationships
@@ -62,6 +66,7 @@ public class ModifyBytes extends AbstractProcessor {
             .required(true)
             .addValidator(StandardValidators.DATA_SIZE_VALIDATOR)
             .defaultValue("0 B")
+            .expressionLanguageSupported(true)
             .build();
     public static final PropertyDescriptor END_OFFSET = new PropertyDescriptor.Builder()
             .name("End Offset")
@@ -69,6 +74,14 @@ public class ModifyBytes extends AbstractProcessor {
             .required(true)
             .addValidator(StandardValidators.DATA_SIZE_VALIDATOR)
             .defaultValue("0 B")
+            .expressionLanguageSupported(true)
+            .build();
+    public static final PropertyDescriptor REMOVE_ALL = new PropertyDescriptor.Builder()
+            .name("Remove All Content")
+            .description("Remove all content from the FlowFile superseding Start Offset and End Offset properties.")
+            .required(true)
+            .allowableValues("true", "false")
+            .defaultValue("false")
             .build();
     private final List<PropertyDescriptor> propDescriptors;
 
@@ -80,6 +93,7 @@ public class ModifyBytes extends AbstractProcessor {
         ArrayList<PropertyDescriptor> pds = new ArrayList<>();
         pds.add(START_OFFSET);
         pds.add(END_OFFSET);
+        pds.add(REMOVE_ALL);
         propDescriptors = Collections.unmodifiableList(pds);
     }
 
@@ -100,11 +114,12 @@ public class ModifyBytes extends AbstractProcessor {
             return;
         }
 
-        final ProcessorLog logger = getLogger();
+        final ComponentLog logger = getLogger();
 
-        final int startOffset = context.getProperty(START_OFFSET).asDataSize(DataUnit.B).intValue();
-        final int endOffset = context.getProperty(END_OFFSET).asDataSize(DataUnit.B).intValue();
-        final int newFileSize = (int) ff.getSize() - startOffset - endOffset;
+        final long startOffset = context.getProperty(START_OFFSET).evaluateAttributeExpressions(ff).asDataSize(DataUnit.B).longValue();
+        final long endOffset = context.getProperty(END_OFFSET).evaluateAttributeExpressions(ff).asDataSize(DataUnit.B).longValue();
+        final boolean removeAll = context.getProperty(REMOVE_ALL).asBoolean();
+        final long newFileSize = removeAll ? 0L : ff.getSize() - startOffset - endOffset;
 
         final StopWatch stopWatch = new StopWatch(true);
         if (newFileSize <= 0) {

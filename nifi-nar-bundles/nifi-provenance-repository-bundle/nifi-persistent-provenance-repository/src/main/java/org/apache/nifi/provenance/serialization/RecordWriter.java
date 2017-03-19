@@ -37,16 +37,27 @@ public interface RecordWriter extends Closeable {
      * Writes the given record out to the underlying stream
      *
      * @param record the record to write
-     * @param recordIdentifier the new identifier of the record
      * @return the number of bytes written for the given records
      * @throws IOException if unable to write the record to the stream
      */
-    long writeRecord(ProvenanceEventRecord record, long recordIdentifier) throws IOException;
+    StorageSummary writeRecord(ProvenanceEventRecord record) throws IOException;
+
+    /**
+     * Flushes any data that is held in a buffer to the underlying storage mechanism
+     *
+     * @throws IOException if unable to flush the bytes
+     */
+    void flush() throws IOException;
 
     /**
      * @return the number of Records that have been written to this RecordWriter
      */
     int getRecordsWritten();
+
+    /**
+     * @return the number of bytes written to this writer
+     */
+    long getBytesWritten();
 
     /**
      * @return the file that this RecordWriter is writing to
@@ -82,6 +93,11 @@ public interface RecordWriter extends Closeable {
     void markDirty();
 
     /**
+     * @return <code>true</code> if {@link #markDirty()} has been called, <code>false</code> otherwise
+     */
+    boolean isDirty();
+
+    /**
      * Syncs the content written to this writer to disk.
      *
      * @throws IOException if unable to sync content to disk
@@ -92,4 +108,9 @@ public interface RecordWriter extends Closeable {
      * @return the TOC Writer that is being used to write the Table of Contents for this journal
      */
     TocWriter getTocWriter();
+
+    /**
+     * @return <code>true</code> if this Writer has been closed via the {@link #close()} method, <code>false</code> otherwise
+     */
+    boolean isClosed();
 }

@@ -16,29 +16,32 @@
  */
 package org.apache.nifi.groups;
 
-import java.net.URI;
+import org.apache.nifi.authorization.resource.ComponentAuthorizable;
+import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.connectable.Positionable;
+import org.apache.nifi.controller.exception.CommunicationsException;
+import org.apache.nifi.events.EventReporter;
+import org.apache.nifi.remote.RemoteGroupPort;
+import org.apache.nifi.remote.protocol.SiteToSiteTransportProtocol;
+
+import java.net.InetAddress;
+import java.util.Collection;
 import java.util.Date;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.nifi.connectable.Position;
-import org.apache.nifi.controller.exception.CommunicationsException;
-import org.apache.nifi.events.EventReporter;
-import org.apache.nifi.remote.RemoteGroupPort;
+public interface RemoteProcessGroup extends ComponentAuthorizable, Positionable {
 
-public interface RemoteProcessGroup {
-
+    @Override
     String getIdentifier();
 
-    URI getTargetUri();
+    String getTargetUri();
+
+    String getTargetUris();
 
     ProcessGroup getProcessGroup();
 
     void setProcessGroup(ProcessGroup group);
-
-    void setPosition(Position position);
-
-    Position getPosition();
 
     String getComments();
 
@@ -156,10 +159,50 @@ public interface RemoteProcessGroup {
     String getAuthorizationIssue();
 
     /**
+     * Validates the current configuration, returning ValidationResults for any
+     * invalid configuration parameter.
+     *
+     * @return Collection of validation result objects for any invalid findings
+     *         only. If the collection is empty then the component is valid. Guaranteed
+     *         non-null
+     */
+    Collection<ValidationResult> validate();
+
+    /**
      * @return the {@link EventReporter} that can be used to report any notable
      * events
      */
     EventReporter getEventReporter();
+
+    SiteToSiteTransportProtocol getTransportProtocol();
+
+    void setTransportProtocol(SiteToSiteTransportProtocol transportProtocol);
+
+    String getProxyHost();
+
+    void setProxyHost(String proxyHost);
+
+    Integer getProxyPort();
+
+    void setProxyPort(Integer proxyPort);
+
+    String getProxyUser();
+
+    void setProxyUser(String proxyUser);
+
+    String getProxyPassword();
+
+    void setProxyPassword(String proxyPassword);
+
+    void setNetworkInterface(String interfaceName);
+
+    String getNetworkInterface();
+
+    /**
+     * Returns the InetAddress that the will this instance will bind to when communicating with a
+     * remote NiFi instance, or <code>null</code> if no specific address has been specified
+     */
+    InetAddress getLocalAddress();
 
     /**
      * Initiates a task in the remote process group to re-initialize, as a

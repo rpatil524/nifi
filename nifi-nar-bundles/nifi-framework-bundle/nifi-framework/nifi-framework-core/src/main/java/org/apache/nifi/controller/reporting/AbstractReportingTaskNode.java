@@ -16,12 +16,7 @@
  */
 package org.apache.nifi.controller.reporting;
 
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-
+import org.apache.nifi.annotation.configuration.DefaultSchedule;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.controller.AbstractConfiguredComponent;
 import org.apache.nifi.controller.ConfigurationContext;
@@ -30,18 +25,29 @@ import org.apache.nifi.controller.ProcessScheduler;
 import org.apache.nifi.controller.ReportingTaskNode;
 import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.controller.ValidationContextFactory;
-import org.apache.nifi.controller.annotation.OnConfigured;
-import org.apache.nifi.controller.exception.ComponentLifeCycleException;
 import org.apache.nifi.controller.service.ControllerServiceNode;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.controller.service.StandardConfigurationContext;
-import org.apache.nifi.nar.NarCloseable;
+import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.registry.VariableRegistry;
 import org.apache.nifi.reporting.ReportingTask;
 import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.util.FormatUtils;
-import org.apache.nifi.util.ReflectionUtils;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.annotation.AnnotationUtils;
 
 public abstract class AbstractReportingTaskNode extends AbstractConfiguredComponent implements ReportingTaskNode {
+
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractReportingTaskNode.class);
 
     private final ReportingTask reportingTask;
     private final ProcessScheduler processScheduler;
@@ -54,12 +60,42 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
     private volatile ScheduledState scheduledState = ScheduledState.STOPPED;
 
     public AbstractReportingTaskNode(final ReportingTask reportingTask, final String id,
-            final ControllerServiceProvider controllerServiceProvider, final ProcessScheduler processScheduler,
-            final ValidationContextFactory validationContextFactory) {
-        super(reportingTask, id, validationContextFactory, controllerServiceProvider);
+                                     final ControllerServiceProvider controllerServiceProvider, final ProcessScheduler processScheduler,
+                                     final ValidationContextFactory validationContextFactory, final VariableRegistry variableRegistry,
+                                     final ComponentLog logger) {
+
+        this(reportingTask, id, controllerServiceProvider, processScheduler, validationContextFactory,
+            reportingTask.getClass().getSimpleName(), reportingTask.getClass().getCanonicalName(),variableRegistry, logger);
+    }
+
+
+    public AbstractReportingTaskNode(final ReportingTask reportingTask, final String id,
+                                     final ControllerServiceProvider controllerServiceProvider, final ProcessScheduler processScheduler,
+                                     final ValidationContextFactory validationContextFactory,
+                                     final String componentType, final String componentCanonicalClass, final VariableRegistry variableRegistry,
+                                     final ComponentLog logger) {
+
+        super(reportingTask, id, validationContextFactory, controllerServiceProvider, componentType, componentCanonicalClass, variableRegistry, logger);
         this.reportingTask = reportingTask;
         this.processScheduler = processScheduler;
         this.serviceLookup = controllerServiceProvider;
+
+        final Class<?> reportingClass = reportingTask.getClass();
+
+        DefaultSchedule dsc = AnnotationUtils.findAnnotation(reportingClass, DefaultSchedule.class);
+        if(dsc != null) {
+            try {
+                this.setSchedulingStrategy(dsc.strategy());
+            } catch (Throwable ex) {
+                LOG.error(String.format("Error while setting scheduling strategy from DefaultSchedule annotation: %s", ex.getMessage()), ex);
+            }
+            try {
+                this.setSchedulingPeriod(dsc.period());
+            } catch (Throwable ex) {
+                this.setSchedulingStrategy(SchedulingStrategy.TIMER_DRIVEN);
+                LOG.error(String.format("Error while setting scheduling period from DefaultSchedule annotation: %s", ex.getMessage()), ex);
+            }
+        }
     }
 
     @Override
@@ -83,7 +119,7 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
     }
 
     @Override
-    public void setScheduldingPeriod(final String schedulingPeriod) {
+    public void setSchedulingPeriod(final String schedulingPeriod) {
         this.schedulingPeriod.set(schedulingPeriod);
     }
 
@@ -104,7 +140,7 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
 
     @Override
     public ConfigurationContext getConfigurationContext() {
-        return new StandardConfigurationContext(this, serviceLookup, getSchedulingPeriod());
+        return new StandardConfigurationContext(this, serviceLookup, getSchedulingPeriod(), getVariableRegistry());
     }
 
     @Override
@@ -124,35 +160,6 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
         this.scheduledState = state;
     }
 
-    @Override
-    public void setProperty(final String name, final String value) {
-        super.setProperty(name, value);
-
-        onConfigured();
-    }
-
-    @Override
-    public boolean removeProperty(String name) {
-        final boolean removed = super.removeProperty(name);
-        if (removed) {
-            onConfigured();
-        }
-
-        return removed;
-    }
-
-    @SuppressWarnings("deprecation")
-    private void onConfigured() {
-        // We need to invoke any method annotation with the OnConfigured annotation in order to
-        // maintain backward compatibility. This will be removed when we remove the old, deprecated annotations.
-        try (final NarCloseable x = NarCloseable.withNarLoader()) {
-            final ConfigurationContext configContext = new StandardConfigurationContext(this, serviceLookup, getSchedulingPeriod());
-            ReflectionUtils.invokeMethodsWithAnnotation(OnConfigured.class, reportingTask, configContext);
-        } catch (final Exception e) {
-            throw new ComponentLifeCycleException("Failed to invoke On-Configured Lifecycle methods of " + reportingTask, e);
-        }
-    }
-
     public boolean isDisabled() {
         return scheduledState == ScheduledState.DISABLED;
     }
@@ -170,66 +177,71 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
     @Override
     public void verifyCanDelete() {
         if (isRunning()) {
-            throw new IllegalStateException("Cannot delete " + reportingTask + " because it is currently running");
+            throw new IllegalStateException("Cannot delete " + reportingTask.getIdentifier() + " because it is currently running");
         }
     }
 
     @Override
     public void verifyCanDisable() {
         if (isRunning()) {
-            throw new IllegalStateException("Cannot disable " + reportingTask + " because it is currently running");
+            throw new IllegalStateException("Cannot disable " + reportingTask.getIdentifier() + " because it is currently running");
         }
 
         if (isDisabled()) {
-            throw new IllegalStateException("Cannot disable " + reportingTask + " because it is already disabled");
+            throw new IllegalStateException("Cannot disable " + reportingTask.getIdentifier() + " because it is already disabled");
         }
     }
 
     @Override
     public void verifyCanEnable() {
         if (!isDisabled()) {
-            throw new IllegalStateException("Cannot enable " + reportingTask + " because it is not disabled");
+            throw new IllegalStateException("Cannot enable " + reportingTask.getIdentifier() + " because it is not disabled");
         }
     }
 
     @Override
     public void verifyCanStart() {
         if (isDisabled()) {
-            throw new IllegalStateException("Cannot start " + reportingTask + " because it is currently disabled");
+            throw new IllegalStateException("Cannot start " + reportingTask.getIdentifier() + " because it is currently disabled");
         }
 
         if (isRunning()) {
-            throw new IllegalStateException("Cannot start " + reportingTask + " because it is already running");
+            throw new IllegalStateException("Cannot start " + reportingTask.getIdentifier() + " because it is already running");
         }
     }
 
     @Override
     public void verifyCanStop() {
         if (!isRunning()) {
-            throw new IllegalStateException("Cannot stop " + reportingTask + " because it is not running");
+            throw new IllegalStateException("Cannot stop " + reportingTask.getIdentifier() + " because it is not running");
         }
     }
 
     @Override
     public void verifyCanUpdate() {
         if (isRunning()) {
-            throw new IllegalStateException("Cannot update " + reportingTask + " because it is currently running");
+            throw new IllegalStateException("Cannot update " + reportingTask.getIdentifier() + " because it is currently running");
         }
+    }
+
+    @Override
+    public void verifyCanClearState() {
+        verifyCanUpdate();
     }
 
     @Override
     public void verifyCanStart(final Set<ControllerServiceNode> ignoredReferences) {
         switch (getScheduledState()) {
             case DISABLED:
-                throw new IllegalStateException(this + " cannot be started because it is disabled");
+                throw new IllegalStateException(this.getIdentifier() + " cannot be started because it is disabled");
             case RUNNING:
-                throw new IllegalStateException(this + " cannot be started because it is already running");
+                throw new IllegalStateException(this.getIdentifier() + " cannot be started because it is already running");
             case STOPPED:
                 break;
         }
         final int activeThreadCount = getActiveThreadCount();
         if (activeThreadCount > 0) {
-            throw new IllegalStateException(this + " cannot be started because it has " + activeThreadCount + " active threads already");
+            throw new IllegalStateException(this.getIdentifier() + " cannot be started because it has " + activeThreadCount + " active threads already");
         }
 
         final Set<String> ids = new HashSet<>();
@@ -240,13 +252,27 @@ public abstract class AbstractReportingTaskNode extends AbstractConfiguredCompon
         final Collection<ValidationResult> validationResults = getValidationErrors(ids);
         for (final ValidationResult result : validationResults) {
             if (!result.isValid()) {
-                throw new IllegalStateException(this + " cannot be started because it is not valid: " + result);
+                throw new IllegalStateException(this.getIdentifier() + " cannot be started because it is not valid: " + result);
             }
         }
     }
 
     @Override
     public String toString() {
-        return "ReportingTask[id=" + getIdentifier() + ", name=" + getName() + "]";
+        return "ReportingTask[id=" + getIdentifier() + "]";
+    }
+
+    @Override
+    public String getProcessGroupIdentifier() {
+        return null;
+    }
+
+    @Override
+    public Collection<ValidationResult> getValidationErrors(Set<String> serviceIdentifiersNotToValidate) {
+        Collection<ValidationResult> results = null;
+        if (getScheduledState() == ScheduledState.STOPPED) {
+            results = super.getValidationErrors(serviceIdentifiersNotToValidate);
+        }
+        return results != null ? results : Collections.emptySet();
     }
 }
